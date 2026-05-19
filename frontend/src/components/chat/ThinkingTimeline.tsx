@@ -2,23 +2,8 @@ import { useState, useEffect, useMemo, memo } from "react";
 import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Circle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { localizeToolName } from "@/lib/tools";
 import type { AgentMessage } from "@/types/agent";
-
-/* ---------- Tool display name keys (mapped to i18n) ---------- */
-const TOOL_I18N_KEY: Record<string, string> = {
-  load_skill: "toolLoadSkill",
-  write_file: "toolWriteFile",
-  edit_file: "toolEditFile",
-  read_file: "toolReadFile",
-  run_backtest: "toolRunBacktest",
-  bash: "toolBash",
-  read_url: "toolReadUrl",
-  read_document: "toolReadDocument",
-  compact: "toolCompact",
-  create_task: "toolCreateTask",
-  update_task: "toolUpdateTask",
-  spawn_subagent: "toolSpawnSubagent",
-};
 
 interface Props {
   messages: AgentMessage[];
@@ -31,8 +16,11 @@ export const ThinkingTimeline = memo(function ThinkingTimeline({ messages, isLat
 
   const toolLabel = (tool?: string): string => {
     if (!tool) return t.toolProcessing;
-    const key = TOOL_I18N_KEY[tool];
-    return key ? (t as Record<string, string>)[key] || tool : tool;
+    const key = localizeToolName(tool);
+    // If the lookup returned a mapped i18n key, resolve it against the
+    // active i18n table; otherwise fall back to the raw tool name.
+    if (key === tool) return tool;
+    return (t as Record<string, string>)[key] || tool;
   };
 
   useEffect(() => {

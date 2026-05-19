@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState, useMemo, useCallback, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Send, Loader2, ArrowDown, CheckCircle2, Square, Download, Plus, Paperclip, X, Users } from "lucide-react";
+import { Send, Loader2, ArrowDown, Square, Download, Plus, Paperclip, X, Users } from "lucide-react";
 import { toast } from "sonner";
 import { useAgentStore } from "@/stores/agent";
 import { useSSE } from "@/hooks/useSSE";
 import { useI18n } from "@/lib/i18n";
 import { api } from "@/lib/api";
-import type { AgentMessage } from "@/types/agent";
+import type { AgentMessage, ToolCallEntry } from "@/types/agent";
 import { AgentAvatar } from "@/components/chat/AgentAvatar";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ThinkingTimeline } from "@/components/chat/ThinkingTimeline";
 import { ConversationTimeline } from "@/components/chat/ConversationTimeline";
+import { ToolProgressIndicator } from "@/components/chat/ToolProgressIndicator";
 
 /* ---------- Message grouping ---------- */
 type MsgGroup =
@@ -47,6 +48,10 @@ export function Agent() {
   const genRef = useRef(0);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const lastEventRef = useRef(0);
+
+  /* tool_progress coalescing — keep latest payload per-tool, flush once per rAF. */
+  const pendingProgressRef = useRef<Map<string, NonNullable<ToolCallEntry["progress"]>>>(new Map());
+  const progressRafRef = useRef(0);
 
   const [attachment, setAttachment] = useState<{ filename: string; filePath: string } | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -175,11 +180,49 @@ export function Agent() {
 
       tool_result: (d) => {
         touch();
+        const toolName = String(d.tool || "");
+        // Drop any in-flight coalesced progress for this tool.
+        pendingProgressRef.current.delete(toolName);
         // Only update tracker (no message creation during streaming)
-        act().updateToolCall(String(d.tool || ""), {
+        act().updateToolCall(toolName, {
           status: d.status === "ok" ? "ok" : "error",
           preview: String(d.preview || ""),
           elapsed_ms: Number(d.elapsed_ms || 0),
+          elapsed_s: undefined,
+          progress: undefined,
+        });
+      },
+
+      tool_heartbeat: (d) => {
+        touch();
+        const toolName = String(d.tool || "");
+        if (!toolName) return;
+        act().updateToolCall(toolName, {
+          elapsed_s: Number(d.elapsed_s || 0),
+        });
+      },
+
+      tool_progress: (d) => {
+        touch();
+        const toolName = String(d.tool || "");
+        if (!toolName) return;
+        const payload: NonNullable<ToolCallEntry["progress"]> = {};
+        if (typeof d.stage === "string" && d.stage) payload.stage = d.stage;
+        if (typeof d.message === "string" && d.message) payload.message = d.message;
+        if (typeof d.current === "number") payload.current = d.current;
+        if (typeof d.total === "number") payload.total = d.total;
+        // Coalesce: keep latest payload per tool, flush once per animation frame.
+        pendingProgressRef.current.set(toolName, payload);
+        if (progressRafRef.current) return;
+        progressRafRef.current = requestAnimationFrame(() => {
+          progressRafRef.current = 0;
+          const pending = pendingProgressRef.current;
+          if (pending.size === 0) return;
+          const store = act();
+          for (const [tool, progress] of pending) {
+            store.updateToolCall(tool, { progress });
+          }
+          pending.clear();
         });
       },
 
@@ -245,6 +288,9 @@ export function Agent() {
         act().clearStreaming();
         act().addMessage({ id: "", type: "error", content: String(d.error || "Execution failed"), timestamp: Date.now() });
         act().setStatus("idle");
+        // Clear stale toolCalls so the next turn's running indicator doesn't
+        // briefly show the previous turn's progress before fresh events land.
+        useAgentStore.setState({ toolCalls: [] });
         scrollToBottom();
       },
 
@@ -494,18 +540,9 @@ export function Agent() {
                     <span className="inline-block w-0.5 h-4 bg-primary ml-0.5 animate-pulse align-middle" />
                   </div>
                 )}
-                {status === "streaming" && toolCalls.length > 0 && (() => {
-                  const latest = toolCalls[toolCalls.length - 1];
-                  const running = latest.status === "running";
-                  return (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      {running
-                        ? <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />
-                        : <CheckCircle2 className="h-3 w-3 text-success/60 shrink-0" />}
-                      <span>Step {toolCalls.length} · {latest.tool}</span>
-                    </div>
-                  );
-                })()}
+                {status === "streaming" && toolCalls.length > 0 && (
+                  <ToolProgressIndicator toolCalls={toolCalls} />
+                )}
               </div>
             </div>
           )}
