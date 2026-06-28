@@ -172,6 +172,33 @@ def test_session_event_stream_accepts_query_token_for_browser_eventsource(
     assert response.status_code in {404, 501}
 
 
+def test_session_event_stream_accepts_jwt_via_token_query_param(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: None,
+) -> None:
+    """JWT access token must be accepted via ``?token=`` (web UI EventSource path).
+
+    Regression: the SSE guard only bound ``?api_key=``, so the frontend's
+    ``?token=<jwt>`` was dropped and every event stream returned 401, making
+    the agent appear unresponsive even though messages were being processed.
+    """
+    monkeypatch.setenv("JWT_SECRET", "test-secret-xxx")
+    monkeypatch.setattr(api_server, "_API_KEY", "")
+
+    from src.auth.service import create_access_token, create_user
+
+    user = create_user(email="sse-test@example.com", password="test-password")
+    token = create_access_token(user.id)
+
+    # Bypass the session runtime so the auth layer is exercised in isolation;
+    # 501 ("Session runtime not enabled") confirms the token was accepted.
+    monkeypatch.setattr(api_server, "_get_session_service", lambda *a, **k: None)
+
+    response = _remote_client().get(f"/sessions/missing/events?token={token}")
+
+    assert response.status_code == 501, response.status_code
+
+
 def test_shell_tools_allowed_for_loopback_api_request() -> None:
     request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
 

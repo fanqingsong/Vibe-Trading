@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{# Scheduled-task report email: rendered after a scheduled task's agent run
+   completes (or fails). Shows the prompt that fired, the agent's reply (or
+   the error), and a deep-link to the session transcript in the Web UI.
+   ``kind`` controls the header tone (success / error). #}
+{% block content %}
+  {% if prompt %}
+  <div style="margin-bottom: 16px;">
+    <div style="font-size: 12px; color: #5a6068; margin-bottom: 4px;">Prompt</div>
+    <div style="padding: 10px 12px; background: #f7f8fa; border-radius: 6px; font-size: 13px; line-height: 1.5;">{{ prompt }}</div>
+  </div>
+  {% endif %}
+
+  <div style="margin-bottom: 8px;">
+    <div style="font-size: 12px; color: #5a6068; margin-bottom: 4px;">
+      {% if kind == 'error' %}Error{% else %}Agent response{% endif %}
+    </div>
+    <div style="padding: 10px 12px; background: #f7f8fa; border-radius: 6px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;{% if kind == 'error' %} color: #c1392b;{% endif %}">{{ body }}</div>
+  </div>
+
+  {% if web_url %}
+  <p style="margin-top: 14px;">
+    <a href="{{ web_url }}" style="color: #4a5fb0; text-decoration: none; font-size: 13px;">Open session transcript →</a>
+  </p>
+  {% endif %}
+{% endblock %}

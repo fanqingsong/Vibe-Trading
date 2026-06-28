@@ -1,0 +1,56 @@
+# Development image for Vibe-Trading backend.
+#
+# Differences from the production Dockerfile:
+#   * No multi-stage frontend build — frontend runs as a separate Vite dev
+#     service in docker-compose (HMR via volume mount).
+#   * Stays root so bind-mounted source / runs / sessions are writable on
+#     any host UID without permission headaches.
+#   * Installs watchfiles for uvicorn --reload.
+#
+# Build context should be the repo root (same as the prod Dockerfile).
+
+FROM python:3.11-slim AS dev
+
+WORKDIR /app
+
+# System deps: build tools for compiling any source wheels on first run,
+# curl for healthchecks.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps first for layer caching. requirements.txt is the same one the
+# prod image uses; watchfiles powers uvicorn --reload.
+COPY agent/requirements.txt agent/requirements.txt
+RUN pip install --no-cache-dir -r agent/requirements.txt watchfiles
+
+# Project metadata + agent package. Source code is also bind-mounted in
+# docker-compose for live reload, but we COPY it here too so the image is
+# usable standalone (e.g. `docker run` without compose).
+COPY pyproject.toml LICENSE README.md ./
+COPY agent/ agent/
+RUN pip install --no-cache-dir -e .
+
+# App data dirs (will typically be bind-mounted or named-volumed in compose).
+RUN mkdir -p agent/runs agent/sessions agent/uploads agent/.swarm/runs
+
+EXPOSE 8899
+
+# Default: run uvicorn with --reload watching only source dirs. Runtime data
+# dirs (runs/, sessions/, .swarm/, uploads/) are excluded so agent file writes
+# don't trigger a reload that kills in-flight runs and drops SSE clients.
+# Overridable via docker-compose `command`.
+CMD ["python", "-m", "uvicorn", "api_server:app", \
+     "--host", "0.0.0.0", "--port", "8899", \
+     "--reload", \
+     "--reload-dir", "agent/src", \
+     "--reload-dir", "agent/cli", \
+     "--reload-dir", "agent/backtest", \
+     "--reload-include", "agent/api_server.py", \
+     "--reload-exclude", "agent/runs/*", \
+     "--reload-exclude", "agent/sessions/*", \
+     "--reload-exclude", "agent/uploads/*", \
+     "--reload-exclude", "agent/.swarm/*", \
+     "--reload-exclude", "agent/__pycache__/*", \
+     "--app-dir", "agent"]

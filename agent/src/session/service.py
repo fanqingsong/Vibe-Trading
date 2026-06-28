@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -24,6 +25,11 @@ from src.session.models import (
 from src.session.search import get_shared_index
 from src.session.store import SessionStore
 
+# Notify side-channel: fire-and-forget email dispatch for high-signal runtime
+# events (order fills, mandate commits, channel halts). Imported lazily inside
+# the event callback so a notify-subsystem import error can never block the
+# SSE bus — the side-channel degrades to a logged warning.
+
 
 class SessionService:
     """Session lifecycle service.
@@ -39,6 +45,7 @@ class SessionService:
         store: SessionStore,
         event_bus: EventBus,
         runs_dir: Path,
+        user_id: Optional[str] = None,
     ) -> None:
         """Initialize the session service.
 
@@ -46,12 +53,21 @@ class SessionService:
             store: Session persistence store.
             event_bus: SSE event bus.
             runs_dir: Root runs directory.
+            user_id: Owner user id. When provided, the search index is scoped
+                to this user (per-user SQLite file) for data isolation.
         """
         self.store = store
         self.event_bus = event_bus
         self.runs_dir = runs_dir
+        self.user_id = user_id
         self._active_loops: Dict[str, "AgentLoop"] = {}
-        self._search_index = get_shared_index()
+        # Per-user search index when a user is bound; shared singleton otherwise.
+        if user_id:
+            from src.session.search import get_index_for_user
+
+            self._search_index = get_index_for_user(user_id)
+        else:
+            self._search_index = get_shared_index()
 
     def create_session(self, title: str = "", config: Optional[Dict[str, Any]] = None) -> Session:
         """Create a new session.
@@ -179,17 +195,125 @@ class SessionService:
             )
             self.store.append_message(reply)
             self._search_index.index_message(session.session_id, "assistant", reply.content)
+            completed = attempt.status == AttemptStatus.COMPLETED
             self.event_bus.emit(
                 session.session_id,
-                "attempt.completed" if attempt.status == AttemptStatus.COMPLETED else "attempt.failed",
+                "attempt.completed" if completed else "attempt.failed",
                 {"attempt_id": attempt.attempt_id, "status": attempt.status.value,
                  "summary": attempt.summary, "error": attempt.error, "run_dir": attempt.run_dir},
+            )
+            self._maybe_notify_scheduled_task(
+                session.session_id,
+                attempt_id=attempt.attempt_id,
+                status="completed" if completed else "failed",
+                summary=attempt.summary or "",
+                error=attempt.error or "",
             )
 
         except Exception as exc:
             attempt.mark_failed(error=str(exc))
             self.store.update_attempt(attempt)
             self.event_bus.emit(session.session_id, "attempt.failed", {"attempt_id": attempt.attempt_id, "error": str(exc)})
+            self._maybe_notify_scheduled_task(
+                session.session_id,
+                attempt_id=attempt.attempt_id,
+                status="failed",
+                summary="",
+                error=str(exc),
+            )
+
+    def _maybe_notify_scheduled_task(
+        self,
+        session_id: str,
+        *,
+        attempt_id: str,
+        status: str,
+        summary: str,
+        error: str,
+    ) -> None:
+        """Fan a scheduled-task result out to email when this session belongs to one.
+
+        Detects whether ``session_id`` is the dedicated session of a
+        :class:`ScheduledTask` with ``notify_enabled`` set. If so, fires a
+        ``scheduler.task.completed`` event to the notify side-channel with the
+        agent's reply (or error) so the owner gets an email per fire.
+
+        Best-effort and never raises: a notify failure is logged and swallowed
+        so it can never destabilise the session runtime. Silently no-ops when
+        the session is an ordinary chat (no matching task) or when SMTP is not
+        configured.
+        """
+        try:
+            from src.scheduler.store import ScheduledTaskStore
+
+            store = ScheduledTaskStore()
+            task = store.get_task_by_session_id(session_id)
+            if task is None or not getattr(task, "notify_enabled", False):
+                return
+
+            owner_email = self._lookup_owner_email(task.user_id)
+            recipients_override = self._parse_notify_emails(task.notify_emails)
+
+            from src.notify.dispatcher import EVENT_SCHEDULER_TASK_COMPLETED, fire_and_forget
+
+            fire_and_forget(
+                EVENT_SCHEDULER_TASK_COMPLETED,
+                {
+                    "task_id": task.id,
+                    "session_id": session_id,
+                    "title": task.title,
+                    "prompt": task.prompt,
+                    "summary": summary,
+                    "error": error,
+                    "status": status,
+                    "attempt_id": attempt_id,
+                    "owner_email": owner_email,
+                    "recipients_override": recipients_override,
+                    "web_url": self._session_web_url(session_id),
+                },
+            )
+        except Exception:
+            # The notify side-channel must never break the session runtime.
+            logging.getLogger(__name__).warning(
+                "scheduled-task email notification failed for session %s",
+                session_id,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _lookup_owner_email(user_id: str | None) -> str:
+        """Return the owner's email for the task, or '' when not resolvable."""
+        if not user_id:
+            return ""
+        try:
+            from src.db.base import is_db_enabled
+            from src.db.models import User
+
+            if not is_db_enabled():
+                return ""
+            from src.db.base import get_session as _db_session
+
+            with _db_session() as s:  # type: ignore[assignment]
+                if s is None:
+                    return ""
+                row = s.query(User).filter(User.id == user_id).one_or_none()
+                return str(row.email) if row is not None else ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _parse_notify_emails(raw: str | None) -> list[str]:
+        """Split a comma/semicolon recipient override into a clean list."""
+        if not raw:
+            return []
+        return [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+
+    @staticmethod
+    def _session_web_url(session_id: str) -> str:
+        """Best-effort deep link to the session transcript in the Web UI."""
+        # The host/port are not known to the session service; the template
+        # renders this as a relative hint when empty.
+        return f"/agent?session={session_id}"
 
     async def _run_with_agent(
         self,
@@ -230,9 +354,25 @@ class SessionService:
         agent_config = load_runtime_agent_config(overrides=safe_overrides)
 
         def event_callback(event_type: str, data: Dict[str, Any]) -> None:
-            """Forward AgentLoop events to the SSE event bus."""
+            """Forward AgentLoop events to the SSE event bus.
+
+            Also fans high-signal runtime events (order fills, mandate commits,
+            channel halts) to the email side-channel via fire-and-forget. Email
+            dispatch is best-effort: it never raises into the bus and silently
+            no-ops when SMTP is not configured. See src.notify.dispatcher.
+            """
             data["attempt_id"] = attempt_id
             self.event_bus.emit(session_id, event_type, data)
+            if event_type in {"live.action", "mandate.committed", "live.halted"}:
+                try:
+                    from src.notify.dispatcher import fire_and_forget
+                    fire_and_forget(event_type, data)
+                except Exception:
+                    # The side-channel must never destabilise the event bus.
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "email side-channel dispatch failed for %s", event_type, exc_info=True
+                    )
 
         def _mcp_collision_warn(msg: str) -> None:
             """Forward MCP server-name collision warnings to the operator event channel."""

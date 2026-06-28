@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{# Report email: backtest results, daily portfolio summary, etc.
+   Supports optional `sections` (list of {title, rows:[{label,value}]}) and an
+   optional `chart_data_uri` for an inline chart image. `kind` controls tone. #}
+{% block content %}
+  {% if body_lines %}
+  <ul>
+    {% for line in body_lines %}
+      <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if chart_data_uri %}
+  <img class="chart" src="{{ chart_data_uri }}" alt="report chart" />
+  {% endif %}
+  {% for section in sections or [] %}
+  <h3 style="margin: 18px 0 8px 0; font-size: 14px; color: #3d4248;">{{ section.title }}</h3>
+  <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+    <tbody>
+      {% for row in section.rows %}
+      <tr style="border-bottom: 1px solid #eceef1;">
+        <td style="padding: 6px 8px; color: #5a6068;">{{ row.label }}</td>
+        <td style="padding: 6px 8px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600;">{{ row.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endfor %}
+{% endblock %}

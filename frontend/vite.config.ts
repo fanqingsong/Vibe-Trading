@@ -3,15 +3,15 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 
 const PROXY_PATHS = [
+  "/auth",
   "/sessions",
   "/swarm/presets",
   "/swarm/runs",
-  "/settings/llm",
-  "/settings/data-sources",
   "/mandate",
   "/live",
   "/upload",
   "/shadow-reports",
+  "/scheduler",
 ];
 
 export default defineConfig(({ mode }) => {
@@ -43,6 +43,12 @@ export default defineConfig(({ mode }) => {
         "^/runs/[^/]+/?$": apiProxyWithHtmlFallback,
         "/runs": apiProxy,
         "/correlation": apiProxyWithHtmlFallback,
+        // The browser navigates to the ``/settings`` SPA page, while every
+        // ``/settings/*`` API call must reach the backend. Route the whole
+        // prefix through the HTML-fallback proxy so only the bare page path
+        // serves index.html and nested endpoints (llm, data-sources, email,
+        // email/test, ...) are never shadowed by the SPA shell.
+        "/settings": apiProxyWithHtmlFallback,
         "^/alpha(?:/|$)": apiProxy,
       },
     },

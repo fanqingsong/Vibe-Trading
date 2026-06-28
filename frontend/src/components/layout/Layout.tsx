@@ -1,10 +1,11 @@
 ﻿import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { BarChart3, Bot, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2 } from "lucide-react";
+import { BarChart3, Bot, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, LogOut, UserRound, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
 import { useAgentStore } from "@/stores/agent";
+import { useAuthStore } from "@/stores/auth";
 import { ConnectionBanner } from "@/components/layout/ConnectionBanner";
 
 // Bump on each release; one place keeps the footer in sync with package.json.
@@ -14,6 +15,7 @@ const NAV = [
   { to: "/", icon: BarChart3, label: "Home" },
   { to: "/agent", icon: Bot, label: "Agent" },
   { to: "/alpha-zoo", icon: Layers, label: "Alpha Zoo" },
+  { to: "/scheduler", icon: Clock, label: "Scheduled Tasks" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/correlation", icon: BarChart3, label: "Correlation Matrix" },
 ];
@@ -27,6 +29,13 @@ export function Layout() {
   const sseStatus = useAgentStore(s => s.sseStatus);
   const sseRetryAttempt = useAgentStore(s => s.sseRetryAttempt);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("qa-sidebar") === "collapsed");
+  const authUser = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+
+  function handleLogout() {
+    logout();
+    window.location.assign("/login");
+  }
 
   const activeSessionId = searchParams.get("session");
   const streamingSessionId = useAgentStore(s => s.streamingSessionId);
@@ -210,6 +219,15 @@ export function Layout() {
         <div className={cn("border-t", collapsed ? "p-1 flex flex-col items-center gap-1" : "p-3 space-y-2")}>
           {collapsed ? (
             <>
+              {authUser && (
+                <button
+                  onClick={handleLogout}
+                  className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
+                  title={`Sign out (${authUser.email})`}
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              )}
               <button onClick={toggle} className="p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors" title={dark ? "Light" : "Dark"}>
                 {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
               </button>
@@ -219,6 +237,23 @@ export function Layout() {
             </>
           ) : (
             <>
+              {authUser && (
+                <div className="flex items-center justify-between gap-2 rounded-md border bg-card/50 px-2 py-1.5">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate text-xs text-muted-foreground" title={authUser.email}>
+                      {authUser.name || authUser.email}
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="shrink-0 p-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+                    title="Sign out"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <button
                   onClick={toggle}

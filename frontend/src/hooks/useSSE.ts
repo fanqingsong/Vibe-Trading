@@ -1,8 +1,16 @@
 /**
  * SSE Hook — auto-reconnect + exponential backoff + LRU dedup + Last-Event-ID resume.
+ *
+ * Auth-aware: EventSource cannot set headers, so credentials ride in the URL
+ * query string. When a JWT access token expires the SSE endpoint returns 401,
+ * which manifests as an ``onerror`` on the EventSource. On reconnect the hook
+ * refreshes the access token (via the refresh-token endpoint) and rebuilds the
+ * URL with the fresh token, so long-lived sessions survive token rotation.
  */
 
 import { useCallback, useRef } from "react";
+
+import { getAccessToken, getRefreshToken, setTokens } from "@/lib/apiAuth";
 
 type EventHandler = (data: Record<string, unknown>) => void;
 type Handlers = Record<string, EventHandler>;
@@ -38,7 +46,6 @@ export function useSSE(config?: SSEConfig) {
   // LRU dedup set
   const seenIdsRef = useRef<Set<string>>(new Set());
   const seenOrderRef = useRef<string[]>([]);
-
   const trackEventId = useCallback((eventId: string): boolean => {
     if (!eventId) return false;
     const seen = seenIdsRef.current;
@@ -66,10 +73,57 @@ export function useSSE(config?: SSEConfig) {
     return baseUrl;
   }, []);
 
+  /**
+   * Replace the ``token=`` (or ``api_key=``) query param in a URL with the
+   * current credential from localStorage. Called on every (re)connect so a
+   * refreshed access token is picked up instead of replaying the stale one
+   * that was embedded when the SSE connection was first opened.
+   */
+  const refreshUrlCredential = useCallback((url: string): string => {
+    const token = getAccessToken();
+    if (!token) return url;
+    return url.replace(/([?&])token=[^&]*/, `$1token=${encodeURIComponent(token)}`);
+  }, []);
+
+  // Dedup in-flight refresh so concurrent reconnect attempts share one refresh.
+  const refreshPromiseRef = useRef<Promise<string | null> | null>(null);
+
+  /**
+   * Best-effort JWT refresh — mirrors the same logic in api.ts. Deduplicated
+   * via ``refreshPromiseRef`` so concurrent SSE reconnects share one refresh.
+   * Returns the new access token, or ``null`` when no refresh token is stored
+   * or the refresh endpoint rejected it.
+   */
+  const refreshAccessToken = useCallback(async (): Promise<string | null> => {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return null;
+    refreshPromiseRef.current = (async () => {
+      try {
+        const res = await fetch(`/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        setTokens(data.access_token, data.refresh_token);
+        return data.access_token as string;
+      } catch {
+        return null;
+      } finally {
+        refreshPromiseRef.current = null;
+      }
+    })();
+    return refreshPromiseRef.current;
+  }, []);
+
   const doConnect = useCallback(() => {
     if (closedRef.current) return;
 
-    const url = buildUrl(urlRef.current);
+    // Rebuild the URL with the latest credential on every attempt so a token
+    // rotated by another tab (or by the refresh below) is picked up.
+    const url = buildUrl(refreshUrlCredential(urlRef.current));
     const source = new EventSource(url);
     sourceRef.current = source;
 
@@ -131,9 +185,18 @@ export function useSSE(config?: SSEConfig) {
 
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = null;
-      doConnect();
+      // A 401 (expired access token) surfaces as a generic EventSource error.
+      // When a refresh token is available, proactively rotate the JWT so the
+      // next connect uses a live token. When there's no refresh token (legacy
+      // API-key mode, or already refreshed by another path) reconnect
+      // synchronously to preserve the original backoff semantics.
+      if (getRefreshToken()) {
+        refreshAccessToken().finally(() => doConnect());
+      } else {
+        doConnect();
+      }
     }, delay);
-  }, [opts.initialRetryMs, opts.backoffFactor, opts.maxRetryMs, setStatus, doConnect]);
+  }, [opts.initialRetryMs, opts.backoffFactor, opts.maxRetryMs, setStatus, doConnect, refreshAccessToken]);
 
   const connect = useCallback((url: string, handlers: Handlers) => {
     closedRef.current = true;

@@ -1,0 +1,76 @@
+# Development override for docker-compose.
+#
+# Brings up a hot-reloading full stack:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# What changes vs. the base file:
+#   * vibe-trading is rebuilt from Dockerfile.dev (no frontend bundle), runs
+#     uvicorn --reload watching agent/, and bind-mounts the host source so
+#     Python edits are picked up instantly without rebuilding the image.
+#   * frontend is a separate Vite dev server (HMR) on :5899, bind-mounted so
+#     TS/TSX edits hot-reload. Vite proxies API calls to the backend service.
+#   * node_modules lives in a named volume so host + container don't fight
+#     over platform-specific binaries, and `npm install` only runs once.
+#
+# Point your browser at http://localhost:5899  (Vite proxies /api → backend).
+
+services:
+  vibe-trading:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    # Live Python reload. We watch only source dirs and explicitly exclude the
+    # runtime data dirs (runs/, sessions/, .swarm/runs/, uploads/, __pycache__).
+    # Without the excludes, every file the agent writes during a run (trace,
+    # tool-results, generated strategy code under .swarm/runs/) triggers a
+    # uvicorn reload mid-run — which kills the in-flight agent, wipes the
+    # in-memory EventBus, and drops every SSE subscriber ("Connection lost").
+    command: >
+      python -m uvicorn api_server:app
+      --host 0.0.0.0 --port 8899
+      --reload
+      --reload-dir agent/src
+      --reload-dir agent/cli
+      --reload-dir agent/backtest
+      --reload-include 'agent/api_server.py'
+      --reload-exclude 'agent/runs/*'
+      --reload-exclude 'agent/sessions/*'
+      --reload-exclude 'agent/uploads/*'
+      --reload-exclude 'agent/.swarm/*'
+      --reload-exclude 'agent/__pycache__/*'
+      --app-dir agent
+    volumes:
+      # Bind-mount the agent source so edits on the host reload the server
+      # without rebuilding the image. Read-write so tools (e.g. tracebacks
+      # writing pyc) still work.
+      - ./agent:/app/agent:rw
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      # Persistent runtime data (same named volumes as prod so data survives
+      # switching between dev and prod stacks).
+      - vibe-runs:/app/agent/runs
+      - vibe-sessions:/app/agent/sessions
+      - vibe-home:/home/vibe/.vibe-trading
+      - vibe-swarm-runs:/app/agent/.swarm/runs
+      - vibe-uploads:/app/agent/uploads
+
+  frontend:
+    image: node:20
+    working_dir: /app
+    ports:
+      - "5899:5899"
+    volumes:
+      - ./frontend:/app:rw
+      # Keep node_modules inside the container independent of the host to avoid
+      # platform mismatches and speed up subsequent boots. The entrypoint
+      # installs deps here on first run only.
+      - frontend-node-modules:/app/node_modules
+    environment:
+      # Vite dev server proxies API requests to the backend service.
+      - VITE_API_URL=http://vibe-trading:8899
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5899"
+    depends_on:
+      vibe-trading:
+        condition: service_started
+
+volumes:
+  frontend-node-modules:

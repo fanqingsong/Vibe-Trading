@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Database, KeyRound, Loader2, RotateCcw, Save, Server, SlidersHorizontal } from "lucide-react";
+import { Database, KeyRound, Loader2, Mail, RotateCcw, Save, Send, Server, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
-import { api, isAuthRequiredError, type DataSourceSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
+import { api, isAuthRequiredError, type DataSourceSettings, type EmailSettings, type LLMProviderOption, type LLMSettings } from "@/lib/api";
 import { getApiAuthKey, setApiAuthKey } from "@/lib/apiAuth";
+import { useAuthStore } from "@/stores/auth";
 
 interface LLMFormState {
   provider: string;
@@ -32,6 +33,9 @@ function toForm(settings: LLMSettings): LLMFormState {
 }
 
 export function Settings() {
+  const authUser = useAuthStore((s) => s.user);
+  const authEnabled = useAuthStore((s) => s.authEnabled);
+  const logout = useAuthStore((s) => s.logout);
   const [settings, setSettings] = useState<LLMSettings | null>(null);
   const [dataSettings, setDataSettings] = useState<DataSourceSettings | null>(null);
   const [form, setForm] = useState<LLMFormState | null>(null);
@@ -45,14 +49,34 @@ export function Settings() {
   const [dataSaving, setDataSaving] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
 
+  // Email / SMTP settings state.
+  const [emailSettings, setEmailSettings] = useState<EmailSettings | null>(null);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("465");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [clearSmtpPassword, setClearSmtpPassword] = useState(false);
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [smtpUseTls, setSmtpUseTls] = useState(true);
+  const [smtpRecipients, setSmtpRecipients] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
+  const [emailTesting, setEmailTesting] = useState(false);
+
   useEffect(() => {
     let alive = true;
-    Promise.all([api.getLLMSettings(), api.getDataSourceSettings()])
-      .then(([llmData, dataSourceData]) => {
+    Promise.all([api.getLLMSettings(), api.getDataSourceSettings(), api.getEmailSettings()])
+      .then(([llmData, dataSourceData, emailData]) => {
         if (!alive) return;
         setSettings(llmData);
         setForm(toForm(llmData));
         setDataSettings(dataSourceData);
+        setEmailSettings(emailData);
+        setSmtpHost(emailData.host);
+        setSmtpPort(String(emailData.port || 465));
+        setSmtpUser(emailData.user);
+        setSmtpFrom(emailData.from_addr);
+        setSmtpUseTls(emailData.use_tls);
+        setSmtpRecipients(emailData.recipients.join(", "));
         setSettingsLoadError(null);
       })
       .catch((error) => {
@@ -63,6 +87,7 @@ export function Settings() {
         } else {
           toast.error(`Failed to load LLM settings: ${message}`);
           toast.error(`Failed to load data source settings: ${message}`);
+          toast.error(`Failed to load email settings: ${message}`);
         }
       })
       .finally(() => {
@@ -147,7 +172,83 @@ export function Settings() {
     }
   };
 
-  const localApiAccessSection = (
+  const submitEmail = async (event: FormEvent) => {
+    event.preventDefault();
+    setEmailSaving(true);
+    try {
+      const recipients = smtpRecipients
+        .split(/[,;]/)
+        .map((r) => r.trim())
+        .filter(Boolean);
+      const updated = await api.updateEmailSettings({
+        host: smtpHost.trim(),
+        port: Number(smtpPort) || 465,
+        user: smtpUser.trim(),
+        password: smtpPassword.trim() || undefined,
+        clear_password: clearSmtpPassword,
+        use_tls: smtpUseTls,
+        from_addr: smtpFrom.trim(),
+        recipients,
+        notify_trade_alerts: emailSettings?.notify_trade_alerts ?? true,
+        notify_reports: emailSettings?.notify_reports ?? true,
+      });
+      setEmailSettings(updated);
+      setSmtpPassword("");
+      setClearSmtpPassword(false);
+      toast.success("Email settings saved");
+    } catch (error) {
+      toast.error(`Failed to save email settings: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setEmailSaving(false);
+    }
+  };
+
+  const testEmail = async () => {
+    setEmailTesting(true);
+    try {
+      const result = await api.testEmailSettings();
+      if (result.ok) {
+        toast.success(`Test email sent to ${result.recipients.join(", ") || "(self)"} (${result.latency_ms}ms)`);
+      } else {
+        toast.error(`Test email failed: ${result.message}`);
+      }
+    } catch (error) {
+      toast.error(`Test email failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setEmailTesting(false);
+    }
+  };
+
+  const localApiAccessSection = authEnabled && authUser ? (
+    <div className="rounded-lg border bg-card p-5 shadow-sm">
+      <div className="mb-4 space-y-1">
+        <div className="flex items-center gap-2">
+          <KeyRound className="h-4 w-4 text-primary" />
+          <h2 className="text-base font-semibold">{"Account"}</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">{"You are signed in with the account below."}</p>
+      </div>
+      <div className="grid gap-1 text-sm">
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">Email</span>
+          <span className="font-medium">{authUser.email}</span>
+        </div>
+        {authUser.name && (
+          <div className="flex justify-between gap-4">
+            <span className="text-muted-foreground">Name</span>
+            <span className="font-medium">{authUser.name}</span>
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => { logout(); window.location.assign("/login"); }}
+        className="mt-4 inline-flex items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition hover:opacity-80"
+      >
+        {"Sign out"}
+      </button>
+    </div>
+  ) : (
     <form onSubmit={submitLocalApiKey} className="rounded-lg border bg-card p-5 shadow-sm">
       <div className="mb-4 space-y-1">
         <div className="flex items-center gap-2">
@@ -180,7 +281,7 @@ export function Settings() {
     </form>
   );
 
-  if (loading || !form || !settings || !dataSettings) {
+  if (loading || !form || !settings || !dataSettings || !emailSettings) {
     return (
       <div className="mx-auto max-w-5xl space-y-6 p-6">
         <div className="space-y-2">
@@ -228,7 +329,7 @@ export function Settings() {
 
       <div className="space-y-2">
         <h2 className="text-lg font-semibold tracking-tight">{"LLM Settings"}</h2>
-        <p className="max-w-3xl text-sm text-muted-foreground">{"Choose the model used by the agent and save it to the project-local agent/.env file."}</p>
+        <p className="max-w-3xl text-sm text-muted-foreground">{"Choose the model used by the agent; settings are persisted to the system database."}</p>
       </div>
 
       <form onSubmit={submit} className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
@@ -386,8 +487,8 @@ export function Settings() {
             </label>
 
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">{"Saved to"}: </span>
-              <span className="break-all font-mono">{settings.env_path}</span>
+              <span className="font-medium text-foreground">{"Stored in"}: </span>
+              <span className="break-all font-mono">{settings.stored_in}</span>
             </div>
 
             <button
@@ -445,8 +546,8 @@ export function Settings() {
             </label>
 
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">{"Saved to"}: </span>
-              <span className="break-all font-mono">{dataSettings.env_path}</span>
+              <span className="font-medium text-foreground">{"Stored in"}: </span>
+              <span className="break-all font-mono">{dataSettings.stored_in}</span>
             </div>
 
             <button
@@ -474,6 +575,146 @@ export function Settings() {
                   : "Python package not installed"}
               </p>
             </div>
+          </div>
+        </div>
+      </form>
+
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold tracking-tight">{"Email Notifications"}</h2>
+        <p className="max-w-3xl text-sm text-muted-foreground">{"Configure outbound SMTP to receive trade-action alerts, mandate events, and report emails. Leave the host blank to disable."}</p>
+      </div>
+
+      <form onSubmit={submitEmail} className="rounded-lg border bg-card p-5 shadow-sm">
+        <div className="mb-5 space-y-1">
+          <div className="flex items-center gap-2">
+            <Mail className="h-4 w-4 text-primary" />
+            <h2 className="text-base font-semibold">{"SMTP Settings"}</h2>
+            <span className={`ml-auto rounded-full px-2 py-0.5 text-xs ${emailSettings.configured ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
+              {emailSettings.configured ? "Configured" : "Not configured"}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid gap-4">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,0.6fr)]">
+            <label className="grid gap-2">
+              <span className={labelClass}>{"SMTP host"}</span>
+              <input
+                value={smtpHost}
+                onChange={(event) => setSmtpHost(event.target.value)}
+                className={fieldClass}
+                placeholder={"smtp.qq.com"}
+              />
+            </label>
+            <label className="grid gap-2">
+              <span className={labelClass}>{"Port"}</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={smtpPort}
+                onChange={(event) => setSmtpPort(event.target.value)}
+                className={fieldClass}
+                placeholder={"465"}
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="grid gap-2">
+              <span className={labelClass}>{"Username"}</span>
+              <input
+                value={smtpUser}
+                onChange={(event) => setSmtpUser(event.target.value)}
+                className={fieldClass}
+                placeholder={"your-email@qq.com"}
+                autoComplete="username"
+              />
+            </label>
+            <label className="grid gap-2">
+              <span className={labelClass}>{"Password"}</span>
+              <div className="relative">
+                <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <input
+                  type="password"
+                  value={smtpPassword}
+                  onChange={(event) => setSmtpPassword(event.target.value)}
+                  className={`${fieldClass} pl-9`}
+                  placeholder={emailSettings.password_configured ? "Configured (leave blank to keep)" : "SMTP authorization code / password"}
+                  autoComplete="current-password"
+                  disabled={clearSmtpPassword}
+                />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={clearSmtpPassword}
+                  onChange={(event) => {
+                    setClearSmtpPassword(event.target.checked);
+                    if (event.target.checked) setSmtpPassword("");
+                  }}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {"Clear saved password"}
+              </label>
+            </label>
+          </div>
+
+          <label className="grid gap-2">
+            <span className={labelClass}>{"From address"}</span>
+            <input
+              value={smtpFrom}
+              onChange={(event) => setSmtpFrom(event.target.value)}
+              className={fieldClass}
+              placeholder={"Defaults to the username above"}
+            />
+          </label>
+
+          <label className="grid gap-2">
+            <span className={labelClass}>{"Alert recipients"}</span>
+            <input
+              value={smtpRecipients}
+              onChange={(event) => setSmtpRecipients(event.target.value)}
+              className={fieldClass}
+              placeholder={"alert@example.com, ops@example.com"}
+            />
+            <span className={hintClass}>{"Comma- or semicolon-separated. Trade-action and mandate alerts are sent here."}</span>
+          </label>
+
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={smtpUseTls}
+              onChange={(event) => setSmtpUseTls(event.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            <span>Use TLS (port 465 = implicit TLS, ports 25/587 = STARTTLS)</span>
+          </label>
+
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{"Stored in"}: </span>
+            <span className="break-all font-mono">{emailSettings.stored_in}</span>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="submit"
+              disabled={emailSaving}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {emailSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {emailSaving ? "Saving..." : "Save email settings"}
+            </button>
+            <button
+              type="button"
+              onClick={testEmail}
+              disabled={emailTesting || !emailSettings.configured}
+              className="inline-flex items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-70"
+              title={emailSettings.configured ? "Send a test email using the saved SMTP config" : "Save a valid SMTP configuration first"}
+            >
+              {emailTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {emailTesting ? "Sending..." : "Send test email"}
+            </button>
           </div>
         </div>
       </form>

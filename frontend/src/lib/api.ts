@@ -1,4 +1,4 @@
-import { authHeaders, withAuthQuery } from "@/lib/apiAuth";
+import { authHeaders, withAuthQuery, getRefreshToken, setTokens, clearTokens } from "@/lib/apiAuth";
 
 const BASE = "";
 
@@ -13,7 +13,7 @@ export class ApiError extends Error {
 }
 
 export const AUTH_REQUIRED_MESSAGE =
-  "Remote API access requires an API key. Add it in Settings, or run the backend on localhost for local-only use.";
+  "Authentication required. Please sign in, or run the backend on localhost for local-only access.";
 
 export function isAuthRequiredError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 401 || error.status === 403);
@@ -31,18 +31,67 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
   return new ApiError(detail, res.status);
 }
 
+// Single-flight refresh: concurrent 401s share one refresh attempt.
+let _refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (_refreshPromise) return _refreshPromise;
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+  _refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      setTokens(data.access_token, data.refresh_token);
+      return data.access_token as string;
+    } catch {
+      return null;
+    } finally {
+      _refreshPromise = null;
+    }
+  })();
+  return _refreshPromise;
+}
+
+function redirectToLogin(): void {
+  clearTokens();
+  if (window.location.pathname !== "/login") {
+    window.location.assign("/login");
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const { headers, ...rest } = options ?? {};
-  const mergedHeaders: Record<string, string> = { "Content-Type": "application/json", ...authHeaders() };
-  if (headers) {
-    new Headers(headers).forEach((value, key) => {
-      mergedHeaders[key] = value;
-    });
+  const buildHeaders = (): Record<string, string> => {
+    const mergedHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    };
+    if (headers) {
+      new Headers(headers).forEach((value, key) => {
+        mergedHeaders[key] = value;
+      });
+    }
+    return mergedHeaders;
+  };
+
+  let res = await fetch(`${BASE}${path}`, { ...rest, headers: buildHeaders() });
+
+  // On 401, attempt a single token refresh and retry once.
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      res = await fetch(`${BASE}${path}`, { ...rest, headers: buildHeaders() });
+    } else {
+      redirectToLogin();
+    }
   }
-  const res = await fetch(`${BASE}${path}`, {
-    ...rest,
-    headers: mergedHeaders,
-  });
+
   if (!res.ok) {
     throw await errorFromResponse(res);
   }
@@ -137,6 +186,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(settings),
     }),
+  getEmailSettings: () => request<EmailSettings>("/settings/email"),
+  updateEmailSettings: (settings: UpdateEmailSettingsRequest) =>
+    request<EmailSettings>("/settings/email", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
+  testEmailSettings: () =>
+    request<EmailTestResult>("/settings/email/test", { method: "POST" }),
 
   // Alpha Zoo API
   listAlphas: (params: AlphaListParams = {}) => {
@@ -164,6 +221,38 @@ export const api = {
     }),
   alphaCompareStreamUrl: (jobId: string) =>
     withAuthQuery(`${BASE}/alpha/compare/${encodeURIComponent(jobId)}/stream`),
+
+  // Scheduled Tasks API
+  listScheduledTasks: () =>
+    request<ScheduledTaskListResponse>("/scheduler/tasks"),
+  createScheduledTask: (body: ScheduledTaskCreateRequest) =>
+    request<ScheduledTaskResponse>("/scheduler/tasks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getScheduledTask: (id: string) =>
+    request<ScheduledTaskResponse>(`/scheduler/tasks/${encodeURIComponent(id)}`),
+  updateScheduledTask: (id: string, body: ScheduledTaskUpdateRequest) =>
+    request<ScheduledTaskResponse>(`/scheduler/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteScheduledTask: (id: string) =>
+    request<{ status: string; deleted: string }>(`/scheduler/tasks/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  runScheduledTaskNow: (id: string) =>
+    request<ScheduledTaskRunResponse>(`/scheduler/tasks/${encodeURIComponent(id)}/run`, {
+      method: "POST",
+    }),
+  toggleScheduledTask: (id: string) =>
+    request<ScheduledTaskResponse>(`/scheduler/tasks/${encodeURIComponent(id)}/toggle`, {
+      method: "POST",
+    }),
+  listSchedulePresets: () =>
+    request<SchedulePresetResponse>("/scheduler/presets"),
+  getSchedulerStatus: () =>
+    request<SchedulerStatusResponse>("/scheduler/status"),
 
   // Connector runtime channel — privileged surface actions (NOT agent tools).
   // commit is the ONLY action that writes a mandate; halt trips the kill switch.
@@ -242,7 +331,7 @@ export interface LLMSettings {
   max_retries: number;
   reasoning_effort: string;
   sse_timeout_seconds: number;
-  env_path: string;
+  stored_in: string;
   providers: LLMProviderOption[];
 }
 
@@ -264,12 +353,46 @@ export interface DataSourceSettings {
   baostock_supported: boolean;
   baostock_installed: boolean;
   baostock_message: string;
-  env_path: string;
+  stored_in: string;
 }
 
 export interface UpdateDataSourceSettingsRequest {
   tushare_token?: string;
   clear_tushare_token?: boolean;
+}
+
+export interface EmailSettings {
+  host: string;
+  port: number;
+  user: string;
+  password_configured: boolean;
+  use_tls: boolean;
+  from_addr: string;
+  recipients: string[];
+  notify_trade_alerts: boolean;
+  notify_reports: boolean;
+  configured: boolean;
+  stored_in: string;
+}
+
+export interface UpdateEmailSettingsRequest {
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  clear_password?: boolean;
+  use_tls?: boolean;
+  from_addr?: string;
+  recipients?: string[];
+  notify_trade_alerts?: boolean;
+  notify_reports?: boolean;
+}
+
+export interface EmailTestResult {
+  ok: boolean;
+  message: string;
+  latency_ms: number;
+  recipients: string[];
 }
 
 // --- Types matching backend API contracts ---
@@ -906,4 +1029,107 @@ export interface MessageItem {
   created_at: string;
   linked_attempt_id?: string;
   metadata?: Record<string, unknown>;
+}
+
+// --- Scheduled Tasks types ---
+
+export type ScheduleType = "preset" | "cron";
+export type OverlapPolicy = "skip" | "queue" | "replace";
+export type TaskStatusCode = "idle" | "running" | "success" | "failed" | "skipped";
+
+export interface ScheduleSpec {
+  type: ScheduleType;
+  /** Required when type === "preset". */
+  preset?: string | null;
+  /** 5-field cron expression, required when type === "cron". */
+  cron?: string | null;
+  /** IANA timezone, e.g. "Asia/Shanghai". */
+  timezone: string;
+}
+
+export interface ScheduledTask {
+  id: string;
+  user_id: string;
+  title: string;
+  prompt: string;
+  schedule_type: ScheduleType;
+  schedule_preset?: string | null;
+  cron_expr?: string | null;
+  timezone: string;
+  session_id: string;
+  enabled: boolean;
+  on_overlap: OverlapPolicy;
+  notify_enabled: boolean;
+  notify_emails?: string | null;
+  last_run_at?: string | null;
+  last_status: TaskStatusCode;
+  last_error?: string | null;
+  last_attempt_id?: string | null;
+  run_count: number;
+  created_at: string;
+  updated_at: string;
+  /** Live next-fire ISO timestamp, recomputed server-side per request. */
+  next_run_at?: string | null;
+  /** Human-readable schedule label, e.g. "Daily at 09:30 (Asia/Shanghai)". */
+  schedule_label?: string | null;
+}
+
+export interface ScheduledTaskCreateRequest {
+  title: string;
+  prompt: string;
+  schedule: ScheduleSpec;
+  /** Optional existing session id; auto-created when omitted. */
+  session_id?: string;
+  on_overlap?: OverlapPolicy;
+  notify_enabled?: boolean;
+  /** Optional comma/semicolon-separated recipient override. */
+  notify_emails?: string;
+}
+
+export interface ScheduledTaskUpdateRequest {
+  title?: string;
+  prompt?: string;
+  schedule?: ScheduleSpec;
+  enabled?: boolean;
+  on_overlap?: OverlapPolicy;
+  timezone?: string;
+  notify_enabled?: boolean;
+  notify_emails?: string;
+}
+
+export interface ScheduledTaskResponse {
+  status: string;
+  task: ScheduledTask;
+}
+
+export interface ScheduledTaskListResponse {
+  status: string;
+  tasks: ScheduledTask[];
+  total: number;
+}
+
+export interface ScheduledTaskRunResponse {
+  status: string;
+  result: {
+    status: string;
+    attempt_id?: string;
+    reason?: string;
+  };
+}
+
+export interface SchedulePreset {
+  key: string;
+  label: string;
+}
+
+export interface SchedulePresetResponse {
+  status: string;
+  presets: SchedulePreset[];
+}
+
+export interface SchedulerStatusResponse {
+  status: string;
+  running: boolean;
+  job_count: number;
+  next_fire_at?: number | null;
 }

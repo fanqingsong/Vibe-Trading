@@ -46,6 +46,13 @@ pydantic>=2.0.0
 python-multipart>=0.0.18
 sse-starlette>=1.6.0
 
+# Auth: database ORM, PostgreSQL driver, password hashing, JWT
+SQLAlchemy>=2.0.0
+psycopg[binary]>=3.1.0
+bcrypt>=4.0.0
+pyjwt>=2.8.0
+email-validator>=2.0.0
+
 # MCP Server
 fastmcp>=2.0.0
 

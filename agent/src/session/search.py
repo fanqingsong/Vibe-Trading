@@ -344,6 +344,8 @@ import threading as _threading
 
 _shared_index: Optional[SessionSearchIndex] = None
 _shared_lock = _threading.Lock()
+_per_user_indexes: dict = {}
+_per_user_lock = _threading.Lock()
 
 
 def get_shared_index() -> SessionSearchIndex:
@@ -359,3 +361,24 @@ def get_shared_index() -> SessionSearchIndex:
             if _shared_index is None:
                 _shared_index = SessionSearchIndex()
     return _shared_index
+
+
+def get_index_for_user(user_id: str) -> SessionSearchIndex:
+    """Return a per-user SessionSearchIndex backed by a dedicated SQLite file.
+
+    Each user's search index lives at ``~/.vibe-trading/sessions-{user_id}.db``
+    so cross-user search isolation holds alongside the file-based session store.
+    Falls back to the shared singleton when ``user_id`` is falsy (dev mode).
+    """
+    if not user_id:
+        return get_shared_index()
+    existing = _per_user_indexes.get(user_id)
+    if existing is not None:
+        return existing
+    with _per_user_lock:
+        existing = _per_user_indexes.get(user_id)
+        if existing is None:
+            db_path = _DB_PATH.parent / f"sessions-{user_id}.db"
+            existing = SessionSearchIndex(db_path=db_path)
+            _per_user_indexes[user_id] = existing
+    return existing

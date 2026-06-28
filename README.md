@@ -451,6 +451,20 @@ Docker publishes the backend on `127.0.0.1:8899` by default and runs the app as 
 
 Your data survives updates: persistent memory, the cross-session search index, user-created skills, shadow accounts, broker connector config, web sessions, backtest runs, swarm history, and uploads all live in named Docker volumes, so `git pull && docker compose up --build` keeps them. They are deleted only by `docker compose down -v`.
 
+#### Dev mode (hot-reload)
+
+For active development, layer the dev override on top of the base compose file. The backend runs under `uvicorn --reload` (Python edits restart the server) and the frontend runs as a separate Vite dev server (TS/TSX edits hot-reload in the browser):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Open `http://localhost:5899` — Vite proxies API calls to the backend on `:8899`.
+
+- Backend edits (`agent/**`) → uvicorn auto-restarts.
+- Frontend edits (`frontend/src/**`) → Vite HMR refreshes the browser.
+- `node_modules` is cached in the `frontend-node-modules` named volume, so `npm install` only runs on the first boot.
+
 ### Path B: Local install
 
 ```bash
@@ -735,6 +749,38 @@ Interactive docs: `http://localhost:8899/docs`
 For localhost development, `vibe-trading serve` keeps the browser workflow simple. For any non-local client, sensitive API endpoints require `API_AUTH_KEY`; use `Authorization: Bearer <key>` for JSON/upload requests. Browser EventSource streams are handled by the Web UI after you enter the same key once in Settings.
 
 Shell-capable tools are available to local CLI and trusted localhost workflows, but are not exposed to remote API sessions unless you explicitly set `VIBE_TRADING_ENABLE_SHELL_TOOLS=1`. Document and journal readers are limited to upload/import roots by default; place files under `agent/uploads`, `agent/runs`, `./uploads`, `./data`, `~/.vibe-trading/uploads`, or `~/.vibe-trading/imports`, or add a dedicated directory through `VIBE_TRADING_ALLOWED_FILE_ROOTS`.
+
+### User authentication (multi-user mode)
+
+Vibe-Trading supports an optional **multi-user mode** with account registration, JWT login, and per-user data isolation. This is recommended for shared or public deployments.
+
+**Enable multi-user mode** by setting both `DATABASE_URL` and `JWT_SECRET` in `agent/.env`:
+
+```bash
+# PostgreSQL (the docker-compose file provisions this service for you)
+DATABASE_URL=postgresql+psycopg://vibe:vibe@db:5432/vibe
+# Generate a strong secret: python -c "import secrets; print(secrets.token_urlsafe(48))"
+JWT_SECRET=your-generated-secret-here
+```
+
+When enabled:
+
+- The Web UI shows a **Sign in / Register** screen; users log in with email + password and receive JWT access + refresh tokens.
+- Each user's **sessions, backtests, uploads, and live-trading state are isolated** under a per-user namespace — users never see each other's data.
+- API requests use `Authorization: Bearer <access-token>`; tokens refresh automatically. Browser SSE streams accept the token via `?token=` query parameter (EventSource cannot send headers).
+
+**Auth endpoints:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/auth/register` | Register and receive a token pair |
+| `POST` | `/auth/login` | Log in and receive a token pair |
+| `POST` | `/auth/refresh` | Exchange a refresh token for a new pair |
+| `GET` | `/auth/status` | Report whether multi-user auth is enabled |
+
+**Dev mode (no database):** when `DATABASE_URL` and `JWT_SECRET` are both unset, the server runs in single-user dev mode — loopback clients are trusted without login, preserving the zero-config local experience. The CLI and localhost Web UI keep working as before. Set both variables only when you want real multi-user auth.
+
+**Docker:** `docker-compose.yml` already includes a PostgreSQL service and sets `DATABASE_URL`. To activate login, just set `JWT_SECRET` in `agent/.env` (or your compose override). Use HTTPS in production — JWTs over plain HTTP can be intercepted.
 
 ### Web UI Settings
 

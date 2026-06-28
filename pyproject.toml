@@ -45,6 +45,7 @@ dependencies = [
     "yfinance>=0.2.30",
     "akshare>=1.12.0",
     "ccxt>=4.0.0",
+    "aiosmtplib>=3.0.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "pydantic>=2.0.0",
@@ -56,6 +57,7 @@ dependencies = [
     "matplotlib>=3.7.0",
     "weasyprint>=60.0",
     "prompt_toolkit>=3.0.0",
+    "croniter>=2.0.0",
 ]
 
 [project.urls]
@@ -86,6 +88,7 @@ include = ["src*", "backtest*", "cli*"]
     "shadow_account/templates/*.j2",
     "shadow_account/templates/*.html",
     "shadow_account/templates/*.css",
+    "notify/templates/*.html",
 ]
 "backtest" = ["*.py"]
 "src.factors" = ["zoo/**/*.yaml", "zoo/**/*.md", "zoo/**/NOTICE"]
@@ -106,6 +109,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["agent/tests"]
 pythonpath = ["agent"]
+asyncio_mode = "auto"
 markers = [
     "unit: Unit tests (fast, no network)",
     "integration: Integration tests (may need network)",

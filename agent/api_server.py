@@ -7,8 +7,6 @@ V5: ReAct Agent + async /run + CORS env + SSE tool events.
 from __future__ import annotations
 
 import asyncio
-import hmac
-import ipaddress
 import json
 import logging
 import os
@@ -171,12 +169,12 @@ class LLMSettingsResponse(BaseModel):
     max_retries: int
     reasoning_effort: str
     sse_timeout_seconds: int
-    env_path: str
+    stored_in: str
     providers: List[LLMProviderOption]
 
 
 class UpdateLLMSettingsRequest(BaseModel):
-    """Update LLM settings persisted to agent/.env."""
+    """Update LLM settings persisted to the system database."""
 
     provider: str = Field(..., min_length=1)
     model_name: str = Field(..., min_length=1)
@@ -197,14 +195,60 @@ class DataSourceSettingsResponse(BaseModel):
     baostock_supported: bool
     baostock_installed: bool
     baostock_message: str
-    env_path: str
+    stored_in: str
 
 
 class UpdateDataSourceSettingsRequest(BaseModel):
-    """Update project-local data source credentials."""
+    """Update system data source credentials."""
 
     tushare_token: Optional[str] = None
     clear_tushare_token: bool = False
+
+
+class EmailSettingsResponse(BaseModel):
+    """Current email / SMTP settings (password never leaves the server)."""
+
+    host: str
+    port: int
+    user: str
+    password_configured: bool
+    use_tls: bool
+    from_addr: str
+    recipients: List[str]
+    notify_trade_alerts: bool
+    notify_reports: bool
+    configured: bool
+    stored_in: str
+
+
+class UpdateEmailSettingsRequest(BaseModel):
+    """Update project-local email / SMTP settings.
+
+    The password uses the same clear/keep/placeholder tri-state as
+    ``UpdateDataSourceSettingsRequest.tushare_token``: sending ``clear_password``
+    clears it; sending a non-placeholder ``password`` sets it; omitting both
+    keeps the existing on-disk value.
+    """
+
+    host: Optional[str] = None
+    port: Optional[int] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
+    clear_password: bool = False
+    use_tls: Optional[bool] = None
+    from_addr: Optional[str] = None
+    recipients: Optional[List[str]] = None
+    notify_trade_alerts: Optional[bool] = None
+    notify_reports: Optional[bool] = None
+
+
+class EmailTestResponse(BaseModel):
+    """Result of a test-email send."""
+
+    ok: bool
+    message: str
+    latency_ms: int
+    recipients: List[str]
 
 
 # ---- V4 Session Models ----
@@ -577,6 +621,26 @@ async def _run_startup_preflight() -> None:
 
     run_preflight(console)
 
+    # Boot the generic scheduled-task subsystem: re-arm every enabled task's
+    # next-fire job from durable storage (resume-via-recompute).
+    try:
+        start_scheduler_service()
+    except Exception:  # noqa: BLE001 — a scheduler failure must not block boot
+        import logging as _logging
+
+        _logging.getLogger(__name__).exception("failed to start scheduler service")
+
+
+@app.on_event("shutdown")
+async def _shutdown_scheduler_service() -> None:
+    """Stop the generic scheduled-task subsystem cleanly."""
+    try:
+        await stop_scheduler_service()
+    except Exception:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger(__name__).exception("failed to stop scheduler service")
+
 
 # ============================================================================
 # API Key Authentication
@@ -589,137 +653,36 @@ _DOCKER_LOOPBACK_ENV = "VIBE_TRADING_TRUST_DOCKER_LOOPBACK"
 
 
 def _configured_api_key() -> str:
-    """Return the current API auth key, if configured."""
+    """Return the current legacy API auth key, if configured."""
     return os.getenv("API_AUTH_KEY") or _API_KEY or ""
 
 
-async def require_auth(
-    request: Request,
-    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
-) -> None:
-    """Validate Bearer token for sensitive API endpoints.
-
-    Args:
-        request: Incoming HTTP request.
-        cred: HTTP Bearer credentials extracted from the Authorization header.
-
-    Raises:
-        HTTPException: 403 when dev-mode auth is reached from a non-local client.
-        HTTPException: 401 when API_AUTH_KEY is set but the token is missing or wrong.
-    """
-    _validate_api_auth(request=request, cred=cred)
-
-
-async def require_event_stream_auth(
-    request: Request,
-    api_key: Optional[str] = Query(None),
-    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
-) -> None:
-    """Validate auth for browser EventSource streams.
-
-    Native EventSource cannot send custom Authorization headers, so event
-    stream endpoints may accept the API key from the query string. Normal JSON
-    endpoints must continue to use Bearer auth only.
-
-    Args:
-        request: Incoming HTTP request.
-        api_key: Optional query-string API key for EventSource clients.
-        cred: HTTP Bearer credentials extracted from the Authorization header.
-    """
-    _validate_api_auth(request=request, cred=cred, query_api_key=api_key, allow_query=True)
-
-
-def _auth_credential_from_header_or_query(
-    cred: Optional[HTTPAuthorizationCredentials],
-    query_api_key: Optional[str],
-    *,
-    allow_query: bool,
-) -> str:
-    """Return the supplied API credential from the permitted source."""
-    if cred and cred.credentials:
-        return cred.credentials
-    if allow_query and query_api_key:
-        return query_api_key
-    return ""
-
-
-def _validate_api_auth(
-    *,
-    request: Request,
-    cred: Optional[HTTPAuthorizationCredentials],
-    query_api_key: Optional[str] = None,
-    allow_query: bool = False,
-) -> None:
-    """Validate configured auth, preserving loopback-only dev mode."""
-    # Loopback clients are always trusted, even when API_AUTH_KEY is set.
-    # The key only gates non-local (LAN/remote) access.
-    if _is_local_client(request):
-        return
-
-    api_key = _configured_api_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API_AUTH_KEY is required for non-local API access",
-        )
-
-    token = _auth_credential_from_header_or_query(cred, query_api_key, allow_query=allow_query)
-    if not token or not hmac.compare_digest(token, api_key):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
-
-
 def _is_local_client(request: Request) -> bool:
-    """Return whether the request originates from a loopback client."""
-    host = request.client.host if request.client else ""
-    if host in {"localhost", "testclient"}:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    if ip.is_loopback:
-        return True
-    return _trusted_docker_loopback_ip(ip)
+    """Return whether the request originates from a trusted local client."""
+    from src.auth.loopback import request_is_local
+
+    return request_is_local(request)
 
 
 def _env_flag_enabled(name: str) -> bool:
     """Return whether a boolean environment flag is enabled."""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    from src.auth.loopback import env_flag_enabled
+
+    return env_flag_enabled(name)
 
 
-def _default_gateway_ips() -> set[ipaddress.IPv4Address]:
+def _default_gateway_ips() -> set:
     """Return IPv4 default gateway addresses from Linux procfs."""
-    gateways: set[ipaddress.IPv4Address] = set()
-    try:
-        lines = Path("/proc/net/route").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return gateways
+    from src.auth.loopback import _default_gateway_ips as _gw
 
-    for line in lines[1:]:
-        fields = line.split()
-        if len(fields) < 3 or fields[1] != "00000000":
-            continue
-        try:
-            raw = int(fields[2], 16).to_bytes(4, byteorder="little")
-            gateways.add(ipaddress.IPv4Address(raw))
-        except ValueError:
-            continue
-    return gateways
+    return _gw()
 
 
-def _trusted_docker_loopback_ip(ip: ipaddress._BaseAddress) -> bool:
-    """Return whether an IP is the trusted Docker host gateway.
+def _trusted_docker_loopback_ip(ip) -> bool:
+    """Return whether an IP is the trusted Docker host gateway."""
+    from src.auth.loopback import trusted_docker_loopback_ip
 
-    Docker Desktop presents host requests to a container as the bridge gateway
-    instead of 127.0.0.1. This escape hatch is safe only when the published
-    port is bound to host loopback, so the official compose file enables it
-    together with a 127.0.0.1 port binding.
-    """
-    if not isinstance(ip, ipaddress.IPv4Address):
-        return False
-    if not _env_flag_enabled(_DOCKER_LOOPBACK_ENV):
-        return False
-    return ip in _default_gateway_ips()
+    return trusted_docker_loopback_ip(ip)
 
 
 def _env_shell_tools_enabled() -> bool:
@@ -732,24 +695,68 @@ def _shell_tools_enabled_for_request(request: Request) -> bool:
     return _is_local_client(request) or _env_shell_tools_enabled()
 
 
+# --- Auth guards -------------------------------------------------------------
+# These delegate to src.auth so every endpoint reuses JWT + loopback + legacy
+# API-key behaviour. ``require_auth`` / ``require_event_stream_auth`` return the
+# resolved User (injectable as current_user) but are also valid as bare
+# ``dependencies=[Depends(require_auth)]`` guards.
+
+async def require_auth(
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+):
+    """Authenticate a request and return the resolved user.
+
+    Resolution order: trusted local client -> JWT -> legacy API_AUTH_KEY.
+    Raises HTTPException(401/403) when no credential validates.
+    """
+    from src.auth.routes import require_user
+
+    return await require_user(request=request, cred=cred)
+
+
+async def require_event_stream_auth(
+    request: Request,
+    token: Optional[str] = Query(None),
+    api_key: Optional[str] = Query(None),
+    cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+):
+    """SSE-compatible auth (EventSource cannot send headers).
+
+    Accepts the token via query string as a fallback for browser clients.
+    Supports both ``?token=`` (JWT access token, used by the web UI) and
+    ``?api_key=`` (legacy shared API key) param names.
+    """
+    from src.auth.routes import require_user_event_stream
+
+    return await require_user_event_stream(
+        request=request, token=token or api_key, cred=cred
+    )
+
+
 async def require_local_or_auth(
     request: Request,
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
-) -> None:
-    """Protect settings access when dev-mode auth is disabled.
+):
+    """Protect settings: local loopback OR full auth (JWT / API key).
 
-    If API_AUTH_KEY is configured, require the bearer token. If not, allow only
-    loopback clients so an API server bound to 0.0.0.0 cannot accept remote
-    credential reads or writes in dev mode.
+    In multi-user mode, a valid JWT/API key is required even from loopback for
+    settings mutation unless no auth is configured at all (pure dev mode).
     """
-    if _configured_api_key():
-        await require_auth(request, cred)
-        return
-    if not _is_local_client(request):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Settings access requires API_AUTH_KEY or a local loopback client",
-        )
+    from src.auth.service import is_auth_enabled
+
+    if not is_auth_enabled() and not _configured_api_key():
+        # Pure dev mode: loopback only.
+        if not _is_local_client(request):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Settings access requires auth or a local loopback client",
+            )
+        from src.auth.service import get_or_create_system_user
+
+        return get_or_create_system_user()
+
+    return await require_auth(request, cred)
 
 
 # ============================================================================
@@ -786,6 +793,10 @@ LLM_PROVIDER_BY_NAME = {provider.name: provider for provider in LLM_PROVIDERS}
 LLM_REASONING_EFFORTS = {"", "low", "medium", "high", "max"}
 LLM_API_KEY_PLACEHOLDERS = {"", "sk-or-v1-your-key-here", "sk-xxx", "xxx", "gsk_xxx"}
 TUSHARE_TOKEN_PLACEHOLDERS = {"", "your-tushare-token"}
+# Mirror of src.notify.config.SMTP_PASSWORD_PLACEHOLDERS; kept inline here so
+# the settings API can validate without importing the notify package at module
+# load time (notify pulls aiosmtplib lazily inside the send path).
+SMTP_PASSWORD_PLACEHOLDERS = {"", "your-smtp-password", "your-password", "xxx", "changeme"}
 
 
 def _ensure_agent_env_file() -> Path:
@@ -822,16 +833,24 @@ def _read_env_values(path: Path) -> Dict[str, str]:
 
 
 def _read_settings_env_values() -> Dict[str, str]:
-    """Read settings without creating agent/.env.
+    """Read the merged LLM + data-source + email settings as a flat dict.
 
-    Prefer the user's active agent/.env. If it does not exist yet, fall back to
-    agent/.env.example for display defaults only.
+    Source of truth is the database (``settings`` table). In inert no-DB mode
+    the store falls back to ``os.environ``. The returned dict is the union of
+    all three categories so the ``_build_*_settings_response`` helpers can look
+    up any key regardless of category.
     """
-    if ENV_PATH.exists():
-        return _read_env_values(ENV_PATH)
-    if ENV_EXAMPLE_PATH.exists():
-        return _read_env_values(ENV_EXAMPLE_PATH)
-    return {}
+    from src.db.settings_store import (
+        CATEGORY_DATA_SOURCE,
+        CATEGORY_EMAIL,
+        CATEGORY_LLM,
+        get_settings,
+    )
+
+    merged: Dict[str, str] = {}
+    for category in (CATEGORY_LLM, CATEGORY_DATA_SOURCE, CATEGORY_EMAIL):
+        merged.update(get_settings(category))
+    return merged
 
 
 def _project_relative_path(path: Path) -> str:
@@ -931,7 +950,7 @@ def _build_llm_settings_response(values: Optional[Dict[str, str]] = None) -> LLM
         max_retries=_coerce_int(env_values.get("MAX_RETRIES", "2"), 2),
         reasoning_effort=env_values.get("LANGCHAIN_REASONING_EFFORT", "").strip().lower(),
         sse_timeout_seconds=_coerce_int(env_values.get("VIBE_TRADING_SSE_TIMEOUT", "90"), 90),
-        env_path=_project_relative_path(ENV_PATH),
+        stored_in="database",
         providers=LLM_PROVIDERS,
     )
 
@@ -968,8 +987,70 @@ def _build_data_source_settings_response(values: Optional[Dict[str, str]] = None
         baostock_supported=supported,
         baostock_installed=installed,
         baostock_message=baostock_message,
-        env_path=_project_relative_path(ENV_PATH),
+        stored_in="database",
     )
+
+
+def _build_email_settings_response(values: Optional[Dict[str, str]] = None) -> EmailSettingsResponse:
+    """Build the public email / SMTP settings payload.
+
+    The password is never serialized: only a boolean ``password_configured``
+    leaves the server. The notify subsystem re-reads the live secret from the
+    environment at send time.
+    """
+    env_values = values if values is not None else _read_settings_env_values()
+    password = env_values.get("SMTP_PASSWORD", "")
+    password_configured = _is_configured_secret(password, SMTP_PASSWORD_PLACEHOLDERS)
+    host = (env_values.get("SMTP_HOST") or "").strip()
+    user = (env_values.get("SMTP_USER") or "").strip()
+    port_raw = (env_values.get("SMTP_PORT") or "").strip()
+    try:
+        port = int(port_raw) if port_raw else 0
+    except ValueError:
+        port = 0
+    use_tls = _env_truthy(env_values.get("SMTP_USE_TLS")) or "SMTP_USE_TLS" not in env_values
+    recipients_raw = env_values.get("NOTIFY_RECIPIENTS") or ""
+    recipients = [r.strip() for r in recipients_raw.replace(";", ",").split(",") if r.strip()]
+    notify_trade = _env_truthy(env_values.get("NOTIFY_TRADE_ALERTS")) or "NOTIFY_TRADE_ALERTS" not in env_values
+    notify_reports = _env_truthy(env_values.get("NOTIFY_REPORTS")) or "NOTIFY_REPORTS" not in env_values
+    configured = bool(host) and bool(user) and password_configured
+    return EmailSettingsResponse(
+        host=host,
+        port=port,
+        user=user,
+        password_configured=password_configured,
+        use_tls=use_tls,
+        from_addr=(env_values.get("SMTP_FROM") or "").strip(),
+        recipients=recipients,
+        notify_trade_alerts=notify_trade,
+        notify_reports=notify_reports,
+        configured=configured,
+        stored_in="database",
+    )
+
+
+def _env_truthy(value: Optional[str]) -> bool:
+    """Return True for common truthy env values (1/true/yes/on)."""
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sync_email_runtime_env(updates: Dict[str, str]) -> None:
+    """Apply saved email settings to the running API process env.
+
+    Mirrors :func:`_sync_runtime_env` for the LLM block: the dotenv is the
+    source of truth, but the live process needs matching env vars so the
+    notify subsystem picks them up without a restart.
+    """
+    for key in (
+        "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM",
+        "SMTP_USE_TLS", "NOTIFY_RECIPIENTS", "NOTIFY_TRADE_ALERTS", "NOTIFY_REPORTS",
+    ):
+        if key in updates:
+            value = updates[key]
+            if value:
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
 
 
 def _sync_runtime_env(provider: LLMProviderOption, updates: Dict[str, str]) -> None:
@@ -1183,8 +1264,32 @@ def _validate_path_param(value: str, kind: str) -> None:
 # API Endpoints
 # ============================================================================
 
+
+def _user_runs_dir(user_id: str) -> Path:
+    """Return the per-user runs directory, falling back to the legacy global
+    RUNS_DIR for backward compatibility with pre-auth data."""
+    candidate = RUNS_DIR / user_id
+    return candidate if candidate.exists() else RUNS_DIR
+
+
+def _resolve_run_dir(run_id: str, user_id: str) -> Path:
+    """Resolve a run directory by id under the user namespace.
+
+    Checks the per-user directory first, then falls back to the legacy global
+    RUNS_DIR so existing runs remain accessible after upgrade.
+    """
+    user_run = RUNS_DIR / user_id / run_id
+    if user_run.exists():
+        return user_run
+    global_run = RUNS_DIR / run_id
+    if global_run.exists():
+        return global_run
+    # Default to the per-user path so new 404s stay namespaced.
+    return user_run
+
+
 @app.get("/runs/{run_id}/code", dependencies=[Depends(require_auth)])
-async def get_run_code(run_id: str):
+async def get_run_code(run_id: str, current_user=Depends(require_auth)):
     """Return strategy source files for a run.
 
     Args:
@@ -1194,7 +1299,7 @@ async def get_run_code(run_id: str):
         Map filename -> source text.
     """
     _validate_path_param(run_id, "run_id")
-    run_dir = RUNS_DIR / run_id / "code"
+    run_dir = _resolve_run_dir(run_id, current_user.id) / "code"
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail=f"Code directory for run {run_id} not found")
     result = {}
@@ -1206,7 +1311,7 @@ async def get_run_code(run_id: str):
 
 
 @app.get("/runs/{run_id}/pine", dependencies=[Depends(require_auth)])
-async def get_run_pine(run_id: str):
+async def get_run_pine(run_id: str, current_user=Depends(require_auth)):
     """Return Pine Script file for a run.
 
     Args:
@@ -1216,7 +1321,7 @@ async def get_run_pine(run_id: str):
         Object with pine script content and exists flag.
     """
     _validate_path_param(run_id, "run_id")
-    pine_path = RUNS_DIR / run_id / "artifacts" / "strategy.pine"
+    pine_path = _resolve_run_dir(run_id, current_user.id) / "artifacts" / "strategy.pine"
     if not pine_path.exists():
         return {"exists": False, "content": None}
     return {
@@ -1226,10 +1331,10 @@ async def get_run_pine(run_id: str):
 
 
 @app.get("/runs/{run_id}", response_model=RunResponse, dependencies=[Depends(require_auth)])
-async def get_run_result(run_id: str):
+async def get_run_result(run_id: str, current_user=Depends(require_auth)):
     """Fetch full details for a historical run by ``run_id``."""
     _validate_path_param(run_id, "run_id")
-    run_dir = RUNS_DIR / run_id
+    run_dir = _resolve_run_dir(run_id, current_user.id)
 
     if not run_dir.exists():
         raise HTTPException(
@@ -1243,10 +1348,10 @@ async def get_run_result(run_id: str):
 
 
 @app.get("/runs", response_model=List[RunInfo], dependencies=[Depends(require_auth)])
-async def list_runs(limit: int = 20):
+async def list_runs(limit: int = 20, current_user=Depends(require_auth)):
     """List recent runs with summary fields."""
     limit = min(max(1, limit), 100)
-    runs_dir = RUNS_DIR
+    runs_dir = _user_runs_dir(current_user.id)
 
     if not runs_dir.exists():
         return []
@@ -1349,13 +1454,15 @@ async def list_runs(limit: int = 20):
     dependencies=[Depends(require_local_or_auth)],
 )
 async def get_llm_settings():
-    """Return project-local LLM settings for the Web UI."""
+    """Return LLM settings from the system database for the Web UI."""
     return _build_llm_settings_response()
 
 
 @app.put("/settings/llm", response_model=LLMSettingsResponse, dependencies=[Depends(require_local_or_auth)])
 async def update_llm_settings(payload: UpdateLLMSettingsRequest):
-    """Persist project-local LLM settings and update the running process."""
+    """Persist LLM settings to the system database and update the running process."""
+    from src.db.settings_store import CATEGORY_LLM, SECRET_KEYS as LLMSecretKeys, upsert_settings
+
     provider_name = payload.provider.strip().lower()
     provider = LLM_PROVIDER_BY_NAME.get(provider_name)
     if provider is None:
@@ -1406,9 +1513,9 @@ async def update_llm_settings(payload: UpdateLLMSettingsRequest):
     elif payload.clear_api_key:
         os.environ.pop("OPENAI_API_KEY", None)
 
-    _write_env_values(ENV_PATH, updates)
+    upsert_settings(CATEGORY_LLM, updates, secret_keys=LLMSecretKeys.get(CATEGORY_LLM, frozenset()))
     _sync_runtime_env(provider, updates)
-    return _build_llm_settings_response(_read_env_values(ENV_PATH))
+    return _build_llm_settings_response()
 
 
 @app.get(
@@ -1417,7 +1524,7 @@ async def update_llm_settings(payload: UpdateLLMSettingsRequest):
     dependencies=[Depends(require_local_or_auth)],
 )
 async def get_data_source_settings():
-    """Return project-local data source credentials for the Web UI."""
+    """Return data source credentials from the system database for the Web UI."""
     return _build_data_source_settings_response()
 
 
@@ -1427,7 +1534,9 @@ async def get_data_source_settings():
     dependencies=[Depends(require_local_or_auth)],
 )
 async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
-    """Persist project-local data source credentials and update the running process."""
+    """Persist data source credentials to the system database and update the running process."""
+    from src.db.settings_store import CATEGORY_DATA_SOURCE, SECRET_KEYS as DSSecretKeys, upsert_settings
+
     current_values = _read_settings_env_values()
     updates: Dict[str, str] = {}
 
@@ -1439,14 +1548,93 @@ async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
         updates["TUSHARE_TOKEN"] = current_values["TUSHARE_TOKEN"]
 
     if updates:
-        _write_env_values(ENV_PATH, updates)
+        upsert_settings(CATEGORY_DATA_SOURCE, updates, secret_keys=DSSecretKeys.get(CATEGORY_DATA_SOURCE, frozenset()))
         token = updates.get("TUSHARE_TOKEN", "").strip()
         if _is_configured_secret(token, TUSHARE_TOKEN_PLACEHOLDERS):
             os.environ["TUSHARE_TOKEN"] = token
         else:
             os.environ.pop("TUSHARE_TOKEN", None)
 
-    return _build_data_source_settings_response(_read_env_values(ENV_PATH))
+    return _build_data_source_settings_response()
+
+
+@app.get(
+    "/settings/email",
+    response_model=EmailSettingsResponse,
+    dependencies=[Depends(require_local_or_auth)],
+)
+async def get_email_settings():
+    """Return email / SMTP settings from the system database for the Web UI."""
+    return _build_email_settings_response()
+
+
+@app.put(
+    "/settings/email",
+    response_model=EmailSettingsResponse,
+    dependencies=[Depends(require_local_or_auth)],
+)
+async def update_email_settings(payload: UpdateEmailSettingsRequest):
+    """Persist email / SMTP settings to the system database and update the running process."""
+    from src.db.settings_store import CATEGORY_EMAIL, SECRET_KEYS as EmailSecretKeys, upsert_settings
+
+    current_values = _read_settings_env_values()
+    updates: Dict[str, str] = {}
+
+    # Password uses the same clear/keep/placeholder tri-state as TUSHARE_TOKEN.
+    if payload.clear_password:
+        updates["SMTP_PASSWORD"] = ""
+    elif payload.password is not None and payload.password.strip():
+        pw = payload.password.strip()
+        updates["SMTP_PASSWORD"] = pw if _is_configured_secret(pw, SMTP_PASSWORD_PLACEHOLDERS) else ""
+    elif "SMTP_PASSWORD" in current_values:
+        updates["SMTP_PASSWORD"] = current_values["SMTP_PASSWORD"]
+
+    if payload.host is not None:
+        updates["SMTP_HOST"] = payload.host.strip()
+    if payload.port is not None:
+        updates["SMTP_PORT"] = str(payload.port)
+    if payload.user is not None:
+        updates["SMTP_USER"] = payload.user.strip()
+    if payload.use_tls is not None:
+        updates["SMTP_USE_TLS"] = "true" if payload.use_tls else "false"
+    if payload.from_addr is not None:
+        updates["SMTP_FROM"] = payload.from_addr.strip()
+    if payload.recipients is not None:
+        updates["NOTIFY_RECIPIENTS"] = ",".join(r.strip() for r in payload.recipients if r.strip())
+    if payload.notify_trade_alerts is not None:
+        updates["NOTIFY_TRADE_ALERTS"] = "1" if payload.notify_trade_alerts else "0"
+    if payload.notify_reports is not None:
+        updates["NOTIFY_REPORTS"] = "1" if payload.notify_reports else "0"
+
+    if updates:
+        upsert_settings(CATEGORY_EMAIL, updates, secret_keys=EmailSecretKeys.get(CATEGORY_EMAIL, frozenset()))
+        _sync_email_runtime_env(updates)
+
+    return _build_email_settings_response()
+
+
+@app.post(
+    "/settings/email/test",
+    response_model=EmailTestResponse,
+    dependencies=[Depends(require_local_or_auth)],
+)
+async def test_email_settings():
+    """Send a test email using the currently-saved SMTP configuration.
+
+    The body is fixed; recipients fall back to the SMTP user when none are
+    configured, so an operator can verify wiring before setting up alert
+    routing. A failure is returned with HTTP 200 and ``ok=false`` so the UI
+    can render the error message rather than treating it as a transport error.
+    """
+    from src.notify.mailer import send_test_email
+
+    result = await send_test_email()
+    return EmailTestResponse(
+        ok=result.ok,
+        message=result.message,
+        latency_ms=result.latency_ms,
+        recipients=result.recipients,
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -1540,25 +1728,29 @@ async def api_info():
 # Session API
 # ============================================================================
 
-_session_service = None
+_session_services: Dict[str, "SessionService"] = {}
 _goal_store = None
 
 
-def _get_session_service():
-    """Lazy-init session service when ENABLE_SESSION_RUNTIME=true."""
-    global _session_service
-    if _session_service is not None:
-        return _session_service
+def _get_session_service(user_id: str = "system"):
+    """Lazy-init a per-user session service when ENABLE_SESSION_RUNTIME=true.
 
+    Each user gets an isolated SessionStore rooted at SESSIONS_DIR/{user_id},
+    so sessions/messages/attempts are never shared across accounts.
+    """
     if os.getenv("ENABLE_SESSION_RUNTIME", "true").lower() != "true":
         return None
+
+    cached = _session_services.get(user_id)
+    if cached is not None:
+        return cached
 
     import asyncio
     from src.session.store import SessionStore
     from src.session.events import EventBus
     from src.session.service import SessionService
 
-    store = SessionStore(base_dir=SESSIONS_DIR)
+    store = SessionStore(base_dir=SESSIONS_DIR / user_id)
     event_bus = EventBus()
 
     try:
@@ -1567,12 +1759,14 @@ def _get_session_service():
     except RuntimeError:
         pass
 
-    _session_service = SessionService(
+    svc = SessionService(
         store=store,
         event_bus=event_bus,
-        runs_dir=RUNS_DIR,
+        runs_dir=RUNS_DIR / user_id,
+        user_id=user_id,
     )
-    return _session_service
+    _session_services[user_id] = svc
+    return svc
 
 
 def _get_goal_store():
@@ -1585,8 +1779,8 @@ def _get_goal_store():
     return _goal_store
 
 
-def _get_existing_session_or_404(session_id: str):
-    svc = _get_session_service()
+def _get_existing_session_or_404(session_id: str, user_id: str = "system"):
+    svc = _get_session_service(user_id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     session = svc.get_session(session_id)
@@ -1595,10 +1789,10 @@ def _get_existing_session_or_404(session_id: str):
     return svc, session
 
 
-@app.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_auth)])
-async def create_session(request: CreateSessionRequest):
+@app.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
+async def create_session(request: CreateSessionRequest, current_user=Depends(require_auth)):
     """Create a chat session."""
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     session = svc.create_session(title=request.title, config=request.config)
@@ -1612,10 +1806,10 @@ async def create_session(request: CreateSessionRequest):
     )
 
 
-@app.get("/sessions", response_model=List[SessionResponse], dependencies=[Depends(require_auth)])
-async def list_sessions(limit: int = Query(50, ge=1, le=200)):
+@app.get("/sessions", response_model=List[SessionResponse])
+async def list_sessions(limit: int = Query(50, ge=1, le=200), current_user=Depends(require_auth)):
     """List sessions."""
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     sessions = svc.list_sessions(limit=limit)
@@ -1632,11 +1826,11 @@ async def list_sessions(limit: int = Query(50, ge=1, le=200)):
     ]
 
 
-@app.get("/sessions/{session_id}", response_model=SessionResponse, dependencies=[Depends(require_auth)])
-async def get_session(session_id: str):
+@app.get("/sessions/{session_id}", response_model=SessionResponse)
+async def get_session(session_id: str, current_user=Depends(require_auth)):
     """Get one session by id."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     session = svc.get_session(session_id)
@@ -1656,12 +1850,11 @@ async def get_session(session_id: str):
     "/sessions/{session_id}/goal",
     response_model=GoalSnapshotResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_auth)],
 )
-async def create_session_goal(session_id: str, req: CreateGoalRequest):
+async def create_session_goal(session_id: str, req: CreateGoalRequest, current_user=Depends(require_auth)):
     """Create or replace the current finance research goal for a session."""
     _validate_path_param(session_id, "session_id")
-    svc, _session = _get_existing_session_or_404(session_id)
+    svc, _session = _get_existing_session_or_404(session_id, current_user.id)
     from src.goal import RiskTier
 
     criteria = [item.strip() for item in req.criteria if item.strip()]
@@ -1700,12 +1893,11 @@ async def create_session_goal(session_id: str, req: CreateGoalRequest):
 @app.get(
     "/sessions/{session_id}/goal",
     response_model=GoalSnapshotResponse,
-    dependencies=[Depends(require_auth)],
 )
-async def get_session_goal(session_id: str):
+async def get_session_goal(session_id: str, current_user=Depends(require_auth)):
     """Return the current finance research goal snapshot for a session."""
     _validate_path_param(session_id, "session_id")
-    _get_existing_session_or_404(session_id)
+    _get_existing_session_or_404(session_id, current_user.id)
     snapshot = _get_goal_store().get_current_snapshot(session_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="No current goal")
@@ -1715,12 +1907,11 @@ async def get_session_goal(session_id: str):
 @app.patch(
     "/sessions/{session_id}/goal",
     response_model=UpdateGoalResponse,
-    dependencies=[Depends(require_auth)],
 )
-async def update_session_goal(session_id: str, req: UpdateGoalRequest):
+async def update_session_goal(session_id: str, req: UpdateGoalRequest, current_user=Depends(require_auth)):
     """Edit the current finance research goal without replacing the session."""
     _validate_path_param(session_id, "session_id")
-    svc, _session = _get_existing_session_or_404(session_id)
+    svc, _session = _get_existing_session_or_404(session_id, current_user.id)
     from src.goal import StaleGoalError
 
     if req.objective is None and req.ui_summary is None:
@@ -1751,12 +1942,11 @@ async def update_session_goal(session_id: str, req: UpdateGoalRequest):
     "/sessions/{session_id}/goal/evidence",
     response_model=AddGoalEvidenceResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_auth)],
 )
-async def add_session_goal_evidence(session_id: str, req: AddGoalEvidenceRequest):
+async def add_session_goal_evidence(session_id: str, req: AddGoalEvidenceRequest, current_user=Depends(require_auth)):
     """Append traceable evidence to the current finance research goal."""
     _validate_path_param(session_id, "session_id")
-    svc, _session = _get_existing_session_or_404(session_id)
+    svc, _session = _get_existing_session_or_404(session_id, current_user.id)
     from dataclasses import asdict
     from src.goal import EvidenceInput, StaleGoalError
 
@@ -1808,12 +1998,11 @@ async def add_session_goal_evidence(session_id: str, req: AddGoalEvidenceRequest
 @app.patch(
     "/sessions/{session_id}/goal/status",
     response_model=UpdateGoalStatusResponse,
-    dependencies=[Depends(require_auth)],
 )
-async def update_session_goal_status(session_id: str, req: UpdateGoalStatusRequest):
+async def update_session_goal_status(session_id: str, req: UpdateGoalStatusRequest, current_user=Depends(require_auth)):
     """Update the current finance research goal status."""
     _validate_path_param(session_id, "session_id")
-    svc, _session = _get_existing_session_or_404(session_id)
+    svc, _session = _get_existing_session_or_404(session_id, current_user.id)
     from src.goal import AuditRow, GoalStatus, StaleGoalError
 
     try:
@@ -1851,11 +2040,11 @@ async def update_session_goal_status(session_id: str, req: UpdateGoalStatusReque
     return {"goal": snapshot["goal"], "snapshot": snapshot}
 
 
-@app.delete("/sessions/{session_id}", dependencies=[Depends(require_auth)])
-async def delete_session(session_id: str):
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str, current_user=Depends(require_auth)):
     """Delete a session."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     deleted = svc.delete_session(session_id)
@@ -1870,11 +2059,11 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
 
 
-@app.patch("/sessions/{session_id}", dependencies=[Depends(require_auth)])
-async def update_session(session_id: str, req: UpdateSessionRequest):
+@app.patch("/sessions/{session_id}")
+async def update_session(session_id: str, req: UpdateSessionRequest, current_user=Depends(require_auth)):
     """Update session fields (e.g. title)."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     session = svc.store.get_session(session_id)
@@ -1888,11 +2077,11 @@ async def update_session(session_id: str, req: UpdateSessionRequest):
     return {"status": "updated", "session_id": session_id}
 
 
-@app.post("/sessions/{session_id}/messages", dependencies=[Depends(require_auth)])
-async def send_message(session_id: str, payload: SendMessageRequest, http_request: Request):
+@app.post("/sessions/{session_id}/messages")
+async def send_message(session_id: str, payload: SendMessageRequest, http_request: Request, current_user=Depends(require_auth)):
     """Send a user message and start the agent loop (natural language strategy)."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     try:
@@ -1906,11 +2095,11 @@ async def send_message(session_id: str, payload: SendMessageRequest, http_reques
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@app.post("/sessions/{session_id}/cancel", dependencies=[Depends(require_auth)])
-async def cancel_session(session_id: str):
+@app.post("/sessions/{session_id}/cancel")
+async def cancel_session(session_id: str, current_user=Depends(require_auth)):
     """Cancel the in-flight agent loop for this session."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     cancelled = svc.cancel_current(session_id)
@@ -1919,11 +2108,11 @@ async def cancel_session(session_id: str):
     return {"status": "cancelled"}
 
 
-@app.get("/sessions/{session_id}/messages", response_model=List[MessageResponse], dependencies=[Depends(require_auth)])
-async def get_messages(session_id: str, limit: int = Query(100, ge=1, le=1000)):
+@app.get("/sessions/{session_id}/messages", response_model=List[MessageResponse])
+async def get_messages(session_id: str, limit: int = Query(100, ge=1, le=1000), current_user=Depends(require_auth)):
     """List messages for a session."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     messages = svc.get_messages(session_id, limit=limit)
@@ -1941,16 +2130,17 @@ async def get_messages(session_id: str, limit: int = Query(100, ge=1, le=1000)):
     ]
 
 
-@app.get("/sessions/{session_id}/events", dependencies=[Depends(require_event_stream_auth)])
+@app.get("/sessions/{session_id}/events")
 async def session_events(
     session_id: str,
     request: Request,
     last_event_id: Optional[str] = Query(None, alias="Last-Event-ID"),
     replay: Optional[str] = Query(None),
+    current_user=Depends(require_event_stream_auth),
 ):
     """SSE stream for agent events."""
     _validate_path_param(session_id, "session_id")
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     if not svc:
         raise HTTPException(status_code=501, detail="Session runtime not enabled")
     session = svc.get_session(session_id)
@@ -2043,7 +2233,7 @@ async def get_shadow_report(shadow_id: str, format: str = "html"):
 
 
 @app.post("/upload", dependencies=[Depends(require_auth)])
-async def upload_file(file: UploadFile):
+async def upload_file(file: UploadFile, current_user=Depends(require_auth)):
     """Upload any document or data file (max 50MB).
 
     Accepts most common formats: PDF, Word, Excel, PowerPoint, images,
@@ -2060,12 +2250,13 @@ async def upload_file(file: UploadFile):
             detail="This file type is not allowed for upload.",
         )
 
+    uploads_dir = UPLOADS_DIR / current_user.id
     safe_name = f"{uuid.uuid4().hex}{ext}"
-    dest = UPLOADS_DIR / safe_name
+    dest = uploads_dir / safe_name
     total_size = 0
 
     try:
-        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        uploads_dir.mkdir(parents=True, exist_ok=True)
         with dest.open("wb") as handle:
             while True:
                 chunk = await file.read(_UPLOAD_CHUNK_SIZE)
@@ -2095,7 +2286,7 @@ async def upload_file(file: UploadFile):
 
     return {
         "status": "ok",
-        "file_path": f"uploads/{safe_name}",
+        "file_path": f"uploads/{current_user.id}/{safe_name}",
         "filename": filename,
     }
 
@@ -2305,7 +2496,15 @@ def _emit_live_event(session_id: Optional[str], event_type: str, data: Dict[str,
     if not session_id:
         return
     try:
-        svc = _get_session_service()
+        # Live sessions are namespaced per user; search all known user stores
+        # for the owning service. Falls back to the default "system" store.
+        svc = None
+        for _svc in _session_services.values():
+            if _svc.get_session(session_id):
+                svc = _svc
+                break
+        if svc is None:
+            svc = _get_session_service("system")
         if svc and svc.get_session(session_id):
             svc.event_bus.emit(session_id, event_type, data)
     except Exception:  # pragma: no cover - relay is non-blocking by contract
@@ -2911,7 +3110,7 @@ def _build_live_runner(broker: str) -> Any:
             return adapter.call_tool(cancel_order_tool, order)
         return adapter.call_tool(submit_order_tool, order)
 
-    svc = _get_session_service()
+    svc = _get_session_service(current_user.id)
     session = svc.create_session(title=f"live-runner:{broker}")
     session_id = session.session_id
 
@@ -2970,8 +3169,8 @@ async def _drive_runner(runner: Any) -> None:
         await asyncio.get_running_loop().run_in_executor(None, lambda: result)
 
 
-@app.post("/live/runner/start", dependencies=[Depends(require_auth)])
-async def start_runner_endpoint(payload: LiveRunnerControlRequest):
+@app.post("/live/runner/start")
+async def start_runner_endpoint(payload: LiveRunnerControlRequest, current_user=Depends(require_auth)):
     """Start the persistent live runner for a broker (SPEC §7.5).
 
     Refuses to start unless a committed, unexpired mandate exists and the kill
@@ -3058,11 +3257,52 @@ async def stop_runner_endpoint(payload: LiveRunnerControlRequest):
 
 
 # ============================================================================
+# Auth: initialize DB + mount user/auth routes
+# ============================================================================
+
+from src.db import init_db  # noqa: E402
+
+init_db()
+
+# Seed settings from agent/.env on first boot (one-time import), then load the
+# DB-backed settings into os.environ so every os.getenv() call site below and
+# in src/ (providers, notify, tools) reads the database as source of truth.
+from src.db.settings_store import (  # noqa: E402
+    seed_all_categories_if_empty,
+    sync_db_settings_to_runtime_env,
+)
+
+try:
+    seed_all_categories_if_empty()
+    sync_db_settings_to_runtime_env()
+except Exception:  # noqa: BLE001 — settings sync must never block boot
+    import logging as _logging
+
+    _logging.getLogger(__name__).exception("failed to seed/sync settings from DB")
+
+from src.auth.routes import router as _auth_router  # noqa: E402
+
+app.include_router(_auth_router)
+
+
+# ============================================================================
 # Alpha Zoo routes (Web UI) — defined in src/api/alpha_routes.py
 # ============================================================================
 
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
 register_alpha_routes(app)
+
+
+# ============================================================================
+# Generic Scheduled Tasks (Web UI) — defined in src/api/scheduler_routes.py
+# ============================================================================
+
+from src.api.scheduler_routes import (  # noqa: E402
+    register_scheduler_routes,
+    start_service as start_scheduler_service,
+    stop_service as stop_scheduler_service,
+)
+register_scheduler_routes(app)
 
 
 # ============================================================================
@@ -3113,7 +3353,7 @@ def serve_main(argv: list[str] | None = None) -> int:
         print("[dev] Frontend: http://localhost:5173")
         print(f"[dev] API: http://localhost:{args.port}")
     elif frontend_dist.exists():
-        if not any(route.path == "/" for route in app.routes):
+        if not any(getattr(route, "path", None) == "/" for route in app.routes):
             app.mount("/", SPAStaticFiles(directory=str(frontend_dist), html=True), name="frontend")
         print(f"[prod] Frontend served from {frontend_dist}")
     else:

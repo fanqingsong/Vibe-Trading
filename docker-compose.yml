@@ -1,12 +1,38 @@
 services:
+  db:
+    # PostgreSQL for multi-user auth. Uses a CN mirror prefix to accelerate pulls.
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:16-alpine
+    environment:
+      - POSTGRES_USER=vibe
+      - POSTGRES_PASSWORD=vibe
+      - POSTGRES_DB=vibe
+    ports:
+      # Bind to localhost only so DBeaver (or other local clients) can connect
+      # without exposing the DB to the network. Remove the 127.0.0.1: prefix
+      # if you need remote access (not recommended without changing the password).
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - vibe-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vibe -d vibe"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   vibe-trading:
     build: .
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8899:8899"
     env_file:
       - agent/.env
     environment:
       - VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1
+      # Multi-user auth DB (PostgreSQL). Override JWT_SECRET in agent/.env to enable login.
+      - DATABASE_URL=postgresql+psycopg://vibe:vibe@db:5432/vibe
       # Ollama runs on the host; from inside the container "localhost" is the
       # container itself, so default to reaching the host via host.docker.internal.
       # Override by exporting OLLAMA_BASE_URL (or setting it in a top-level .env)
@@ -28,25 +54,10 @@ services:
       - vibe-uploads:/app/agent/uploads
     restart: unless-stopped
 
-  frontend:
-    image: node:20
-    working_dir: /app
-    ports:
-      - "5899:5899"
-    volumes:
-      - ./frontend:/app
-    environment:
-      - VITE_API_URL=http://vibe-trading:8899
-    command: sh -c "npm install && npm run dev -- --host --port 5899"
-    profiles:
-      - frontend
-    depends_on:
-      vibe-trading:
-        condition: service_started
-
 volumes:
   vibe-runs:
   vibe-sessions:
   vibe-home:
   vibe-swarm-runs:
   vibe-uploads:
+  vibe-db:
