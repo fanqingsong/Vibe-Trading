@@ -325,7 +325,7 @@ class TestChatOpenAIWithReasoningStreaming:
         }
 
     def test_preserves_reasoning_on_streaming_delta(self) -> None:
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance()
         chunk = self._delta_chunk(
@@ -339,7 +339,7 @@ class TestChatOpenAIWithReasoningStreaming:
 
     def test_streaming_chunks_accumulate_reasoning_across_chunks(self) -> None:
         """Multiple deltas: AIMessageChunk.__add__ concatenates via merge_dicts."""
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance()
         chunks = [
@@ -359,7 +359,7 @@ class TestChatOpenAIWithReasoningStreaming:
 
     def test_streaming_delta_without_reasoning_is_unchanged(self) -> None:
         """OpenAI-style stream deltas (no reasoning_content) produce empty additional_kwargs."""
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance(model="gpt-4")
         chunk = self._delta_chunk({"role": "assistant", "content": "hello"}, model="gpt-4")
@@ -370,7 +370,7 @@ class TestChatOpenAIWithReasoningStreaming:
         assert "reasoning_content" not in gen_chunk.message.additional_kwargs
 
     def test_preserves_tool_call_thought_signature_on_streaming_delta(self) -> None:
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance(model="gemini-3-pro-preview")
         chunk = self._delta_chunk(
@@ -415,7 +415,7 @@ class TestChatOpenAIWithReasoningStreaming:
         All variants must normalize to additional_kwargs["reasoning_content"] so
         downstream reads one canonical key.
         """
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance(model="moonshotai/kimi-k2-thinking")
         chunk = self._delta_chunk(
@@ -433,7 +433,7 @@ class TestChatOpenAIWithReasoningStreaming:
 
     def test_reasoning_content_takes_priority_over_reasoning(self) -> None:
         """If both variants are present, reasoning_content wins (higher priority)."""
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance()
         chunk = self._delta_chunk(
@@ -452,7 +452,7 @@ class TestChatOpenAIWithReasoningStreaming:
 
     def test_usage_only_chunk_returns_without_modification(self) -> None:
         """Final usage-only chunks have no choices[] — must not crash."""
-        from langchain_core.messages import AIMessageChunk
+        from src.providers.messages import AIMessageChunk
 
         instance = self._instance()
         usage_only = {
@@ -484,7 +484,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
     def test_reinjects_reasoning_content_from_additional_kwargs(self) -> None:
         """Assistant messages with reasoning_content in additional_kwargs are
         preserved across LangChain's dict → AIMessage → dict serialization."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance()
         history = [
@@ -509,7 +509,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
     def test_normalizes_none_content_on_assistant_messages(self) -> None:
         """LangChain serializes AIMessage(content='', tool_calls=[...]) as
         content=null; Moonshot kimi-k2.6 rejects that, so we normalize to ''."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance()
         history = [
@@ -533,7 +533,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_reinjects_tool_call_thought_signature_from_additional_kwargs(self) -> None:
         """Captured Gemini signatures survive LangChain's tool-call serialization."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance(model="gemini-3-pro-preview")
         history = [
@@ -559,7 +559,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_reinjects_tool_call_thought_signature_from_raw_tool_call(self) -> None:
         """Loop-provided raw tool calls carry Gemini's OpenAI-compat extra_content."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance(model="gemini-3-pro-preview")
         history = [
@@ -655,7 +655,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_injects_empty_reasoning_content_when_absent(self) -> None:
         """kimi-k2.6 requires reasoning_content on every assistant turn."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance()
         history = [
@@ -670,7 +670,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_openai_does_not_inject_empty_reasoning_content(self) -> None:
         """Strict Kimi continuation fields must not leak into OpenAI payloads."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance(model="gpt-4")
         history = [
@@ -685,7 +685,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_deepseek_does_not_replay_reasoning_content_outbound(self) -> None:
         """DeepSeek reasoning traces are inbound progress, not next-turn payload."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance(model="deepseek-v4-pro")
         history = [
@@ -703,7 +703,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_user_and_system_messages_untouched(self) -> None:
         """Only assistant messages get the reasoning_content injection."""
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from src.providers.messages import HumanMessage, SystemMessage
 
         instance = self._instance()
         history = [
@@ -718,7 +718,7 @@ class TestChatOpenAIWithReasoningOutboundPayload:
 
     def test_non_gemini_does_not_inject_tool_call_thought_signature(self) -> None:
         """Gemini thought signatures must be Gemini-only payload mutations."""
-        from langchain_core.messages import AIMessage, HumanMessage
+        from src.providers.messages import AIMessage, HumanMessage
 
         instance = self._instance(model="gpt-4")
         history = [

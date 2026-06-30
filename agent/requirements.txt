@@ -1,12 +1,8 @@
 # Core LLM & Orchestration
 rich>=13.0.0
 pyyaml>=6.0.0
-langchain>=1.0.0,<2
-langchain-core>=1.0.0,<2
-langchain-openai>=1.0.0,<2
-# optional: pip install "vibe-trading-ai[deepseek]" — native DeepSeek adapter (langchain-deepseek)
-langgraph>=1.0.10,<1.1
-langgraph-checkpoint>=2.1.0,<5
+openai>=1.50.0
+# optional: pip install "vibe-trading-ai[deepseek]" — DeepSeek adapter (langchain-deepseek)
 python-dotenv>=1.0.0
 httpx>=0.28.0
 oauth-cli-kit>=0.1.3

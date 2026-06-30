@@ -29,8 +29,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import warnings
-warnings.filterwarnings("ignore", message=".*Importing verbose from langchain.*")
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
 
 for _s in ("stdout", "stderr"):
     _r = getattr(getattr(sys, _s, None), "reconfigure", None)

@@ -1,6 +1,10 @@
 """ChatLLM: raw LLM message interface with function calling support.
 
-ChatLLM is designed specifically for the AgentLoop ReAct cycle.
+ChatLLM is designed specifically for the AgentLoop ReAct cycle. It wraps the
+provider LLM (``NativeLLM`` / ``OpenAICodexLLM``) and exposes ``chat`` and
+``stream_chat``. Parsing relies only on the duck-typed message shape
+(``content``, ``tool_calls``, ``additional_kwargs``, ``response_metadata``)
+shared by both backends.
 """
 
 from __future__ import annotations
@@ -51,10 +55,11 @@ class LLMResponse:
         reasoning_content: Optional thinking trace surfaced by reasoning models.
         finish_reason: Finish reason string.
         usage_metadata: Real token counts reported by the provider, when
-            available. Mirrors LangChain's ``AIMessage.usage_metadata`` —
-            ``{"input_tokens": int, "output_tokens": int, "total_tokens": int}``.
-            ``None`` if the provider did not return usage information; callers
-            should fall back to a heuristic in that case.
+            available. Mirrors the AIMessage ``response_metadata["usage"]``
+            shape — ``{"input_tokens": int, "output_tokens": int,
+            "total_tokens": int}``. ``None`` if the provider did not return
+            usage information; callers should fall back to a heuristic in
+            that case.
     """
 
     content: Optional[str] = None
@@ -121,7 +126,8 @@ def _redact_provider_error(message: str) -> str:
 class ChatLLM:
     """LLM chat client with function calling support.
 
-    Uses build_llm() to obtain a ChatOpenAI instance and bind_tools() to attach tool definitions.
+    Uses build_llm() to obtain a NativeLLM / OpenAICodexLLM instance and
+    bind_tools() to attach tool definitions.
 
     Attributes:
         model_name: Model name.
@@ -197,7 +203,7 @@ class ChatLLM:
 
     @staticmethod
     def _tool_call_thought_signature_maps(ai_message: Any) -> tuple[dict[str, str], dict[int, str]]:
-        """Return Gemini thought signatures captured by ``ChatOpenAIWithReasoning``."""
+        """Return Gemini thought signatures captured by the provider LLM."""
         by_id: dict[str, str] = {}
         by_index: dict[int, str] = {}
         additional_kwargs = getattr(ai_message, "additional_kwargs", {})
@@ -223,23 +229,24 @@ class ChatLLM:
 
     @staticmethod
     def _parse_response(ai_message: Any) -> LLMResponse:
-        """Convert a LangChain AIMessage (or AIMessageChunk) to ``LLMResponse``.
+        """Convert a duck-typed AIMessage (or AIMessageChunk) to ``LLMResponse``.
 
         Single source for reasoning: ``additional_kwargs["reasoning_content"]``,
-        populated by ``ChatOpenAIWithReasoning`` on both stream and non-stream paths.
+        populated by ``NativeLLM`` / ``OpenAICodexLLM`` on both stream and
+        non-stream paths.
 
         ``usage_metadata`` is forwarded as-is from the underlying message so
         downstream cost / billing audit code (e.g. swarm worker token totals)
         can use real provider tokens instead of a character-count heuristic.
         For ``AIMessageChunk`` the metadata accumulates via the ``__add__``
-        merge LangChain performs while the response is being streamed; the
-        final aggregate carries the same shape as the non-stream path.
+        merge performed while the response is being streamed; the final
+        aggregate carries the same shape as the non-stream path.
         """
         usage = getattr(ai_message, "usage_metadata", None)
-        # Some providers / older LangChain versions surface a ``UsageMetadata``
-        # TypedDict that doesn't json-serialise without a cast. Normalise to a
-        # plain ``dict[str, int]`` so the value can be persisted alongside the
-        # rest of the run state without surprises.
+        # Some providers surface a ``UsageMetadata`` TypedDict that doesn't
+        # json-serialise without a cast. Normalise to a plain ``dict[str, int]``
+        # so the value can be persisted alongside the rest of the run state
+        # without surprises.
         if usage is not None and not isinstance(usage, dict):
             try:
                 usage = dict(usage)

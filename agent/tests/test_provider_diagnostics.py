@@ -38,7 +38,7 @@ def test_provider_diagnostics_redacts_secrets_and_proxy_values() -> None:
     assert diagnostics["api_key"]["DEEPSEEK_API_KEY"] == "set"
     assert diagnostics["proxy"]["HTTPS_PROXY"] == "http://proxy.local:8888"
     assert diagnostics["proxy"]["NO_PROXY"] == "set"
-    assert "langchain-openai" in diagnostics["packages"]
+    assert "openai" in diagnostics["packages"]
     assert "sk-super-secret" not in encoded
     assert "user:pass" not in encoded
     assert "token=secret" not in encoded
@@ -130,20 +130,22 @@ def test_kimi_user_agent_header_is_moonshot_only() -> None:
 
 
 def test_deepseek_native_adapter_is_used_when_available(monkeypatch) -> None:
-    """DeepSeek should prefer the optional native adapter when installed."""
+    """When the optional langchain-deepseek package is importable, the DeepSeek
+    native-adapter path returns a NativeLLM pointed at the DeepSeek endpoint.
+
+    (We no longer call ``ChatDeepSeek`` directly — the openai-compatible
+    NativeLLM is functionally equivalent for our usage — but the opt-in
+    adapter mode still routes through this branch when the package is present.)
+    """
     import sys
     from types import SimpleNamespace
 
     import src.providers.llm as llm_mod
+    from src.providers.llm import NativeLLM
 
     llm_mod._dotenv_loaded = True
-    captured: dict = {}
 
-    class _FakeChatDeepSeek:
-        def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
-
-    monkeypatch.setitem(sys.modules, "langchain_deepseek", SimpleNamespace(ChatDeepSeek=_FakeChatDeepSeek))
+    monkeypatch.setitem(sys.modules, "langchain_deepseek", SimpleNamespace(ChatDeepSeek=object))
     env = {
         "LANGCHAIN_PROVIDER": "deepseek",
         "DEEPSEEK_API_KEY": "ds-test",
@@ -154,7 +156,7 @@ def test_deepseek_native_adapter_is_used_when_available(monkeypatch) -> None:
     with patch.dict(os.environ, env, clear=True):
         llm = build_llm()
 
-    assert isinstance(llm, _FakeChatDeepSeek)
-    assert captured["model"] == "deepseek-v4-pro"
-    assert captured["api_key"] == "ds-test"
-    assert captured["base_url"] == "https://api.deepseek.com/v1"
+    assert isinstance(llm, NativeLLM)
+    assert llm.model_name == "deepseek-v4-pro"
+    assert llm.api_key == "ds-test"
+    assert llm.base_url == "https://api.deepseek.com/v1"
