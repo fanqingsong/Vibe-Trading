@@ -49,6 +49,11 @@ _SP500_CONSTITUENT_SOURCE_DATE = "2026-05-17"
 # allows ~200 calls/min; 4 workers stays well under that with a 300-name list.
 _CSI300_FETCH_WORKERS = 4
 
+# Free fallback data source (Sina Finance) tolerates moderate parallelism.
+# 5 workers keeps a 300-name CSI300 list under ~30s; higher risks temporary
+# rate-limiting from the public endpoint.
+_CSI300_AKSHARE_FETCH_WORKERS = 5
+
 
 # ---------------------------------------------------------------------------
 # Universe + period parsing
@@ -99,7 +104,7 @@ def _load_universe_panel(
 
     Raises:
         ValueError: unknown universe or bad period.
-        RuntimeError: ``TUSHARE_TOKEN`` unset when csi300 is requested.
+        RuntimeError: both Tushare and AKShare failed to load the csi300 panel.
     """
     if universe not in _UNIVERSE_TAG:
         raise ValueError(
@@ -245,22 +250,28 @@ _SP500_FALLBACK_CODES = [
 
 
 def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
-    """CSI 300 panel via Tushare. Includes ``amount`` (required by gtja191).
+    """CSI 300 panel via Tushare, with AKShare free fallback.
 
     Constituents are taken from the most recent ``index_weight`` snapshot in
     the requested window; if that call fails we degrade to a 30-name
     blue-chip fallback so the bench still runs.
+
+    If the Tushare path yields an empty panel (missing/invalid token, or
+    insufficient积分 on the ``daily`` endpoint), we transparently retry via
+    AKShare — which is free and needs no credentials.
     """
     token = os.getenv("TUSHARE_TOKEN", "").strip()
     if not token or token == "your-tushare-token":
-        raise RuntimeError(
-            "TUSHARE_TOKEN not in agent/.env or environment; required for csi300 universe"
+        logger.warning(
+            "csi300: TUSHARE_TOKEN not configured; falling back to AKShare (free)"
         )
+        return _load_csi300_panel_akshare(start, end)
 
     try:
         import tushare as ts
     except ImportError as exc:
-        raise RuntimeError(f"tushare not installed: {exc}") from exc
+        logger.warning("csi300: tushare not installed (%s); falling back to AKShare", exc)
+        return _load_csi300_panel_akshare(start, end)
 
     pro = ts.pro_api(token)
     sd = start.replace("-", "")
@@ -316,6 +327,17 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
                 fetched[code] = frame
 
     panel = _wide_from_fetched(fetched, include_amount=True)
+    # Empty panel usually means Tushare积分不足 on the daily endpoint — the
+    # token is valid but the account can't call pro.daily. Fall back to the
+    # free AKShare path instead of returning an empty dict (which would surface
+    # as "produced empty panel" to the user).
+    if not panel or "close" not in panel or panel["close"].empty:
+        logger.warning(
+            "csi300: Tushare daily returned no data (likely积分不足); "
+            "falling back to AKShare (free)"
+        )
+        return _load_csi300_panel_akshare(start, end)
+
     # CN equity vwap: Tushare ``amount`` is in 千元, ``volume`` in 手. True VWAP
     # = (amount * 1000 CNY) / (volume * 100 shares). Matches
     # ``src.factors.base.vwap(EQUITY_CN)``.
@@ -325,6 +347,126 @@ def _load_csi300_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
         panel["vwap"] = safe_div(
             panel["amount"] * 1000.0, panel["volume"] * 100.0 + 1.0
         )
+    return panel
+
+
+def _load_csi300_panel_akshare(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """CSI 300 panel via free sources (no token). Fallback for Tushare.
+
+    Used when ``TUSHARE_TOKEN`` is missing/invalid or the Tushare ``daily``
+    endpoint returns no rows (insufficient积分).
+
+    Two-stage fallback chain (both free, no auth):
+      1. Constituents — AKShare ``index_stock_cons_csindex`` (CSI official OSS).
+         If that fails, degrade to the 30-name blue-chip fallback list.
+      2. Daily OHLCV — Sina Finance kline API. This endpoint is the most
+         reliable free source from restricted networks (e.g. WSL2); Tencent's
+         kline API and AKShare's default Eastmoney source both rate-limit /
+         drop connections under load. Sina does not report ``amount``, so vwap
+         is approximated as ``(O+H+L+C)/4`` — sufficient for alpha101; gtja191
+         vwap-dependent factors lose some precision but still run.
+
+    Volume from Sina is in shares; we rescale to 手 (/100) so the panel matches
+    the Tushare口径 used by downstream factor code.
+    """
+    import urllib.request
+
+    # --- Constituents ---------------------------------------------------------
+    codes: list[str] = []
+    try:
+        import akshare as ak
+
+        cons = ak.index_stock_cons_csindex(symbol="000300")
+        if cons is not None and not cons.empty and "成分券代码" in cons.columns:
+            raw = cons["成分券代码"].astype(str).str.zfill(6).tolist()
+            for digits in raw:
+                suffix = ".SH" if digits.startswith(("60", "68", "90")) else ".SZ"
+                codes.append(f"{digits}{suffix}")
+            logger.info("csi300[free]: %d constituents from csindex", len(codes))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("csi300[free] constituents fetch failed (%s)", exc)
+
+    if not codes:
+        codes = list(_CSI300_FALLBACK_CODES)
+        logger.warning("csi300[free]: using %d-name fallback (degraded run)", len(codes))
+
+    # --- Daily OHLCV via Sina Finance -----------------------------------------
+    # Sina symbol format: sh600519 / sz000001. The endpoint takes ``datalen``
+    # (number of most-recent daily bars) rather than a date range, so we fetch
+    # a generous window and clip to the requested range afterwards.
+    _SINA_KLINE = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "CN_MarketData.getKLineData?symbol={sym}&scale=240&ma=no&datalen={datalen}"
+    )
+    # ~6.5 years of trading days — covers the longest bench period (2020-2025).
+    _SINA_DALEN = 1600
+
+    def _to_sina_symbol(code: str) -> str | None:
+        digits, _, suffix = code.upper().partition(".")
+        if suffix == "SH":
+            return f"sh{digits}"
+        if suffix == "SZ":
+            return f"sz{digits}"
+        return None
+
+    def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
+        sym = _to_sina_symbol(code)
+        if sym is None:
+            return code, None
+        url = _SINA_KLINE.format(sym=sym, datalen=_SINA_DALEN)
+
+        def _do_fetch() -> pd.DataFrame | None:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://finance.sina.com.cn",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                rows = json.loads(resp.read().decode("utf-8"))
+            if not rows:
+                return None
+            df = pd.DataFrame(rows)
+            df["day"] = pd.to_datetime(df["day"])
+            df = df.set_index("day").sort_index()
+            df = df.rename(columns={
+                "open": "open", "high": "high", "low": "low",
+                "close": "close", "volume": "volume",
+            })
+            for col in ("open", "high", "low", "close", "volume"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna(subset=["open", "high", "low", "close"])
+            # Sina volume is in shares → 手 to match Tushare口径.
+            df["volume"] = df["volume"] / 100.0
+            return df.loc[start:end, ["open", "high", "low", "close", "volume"]]
+
+        frame = _retry(_do_fetch)
+        if frame is None or frame.empty:
+            return code, None
+        return code, frame
+
+    fetched: dict[str, pd.DataFrame] = {}
+    with ThreadPoolExecutor(max_workers=_CSI300_AKSHARE_FETCH_WORKERS) as pool:
+        futures = [pool.submit(_fetch_one, code) for code in codes]
+        for fut in as_completed(futures):
+            try:
+                code, frame = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("csi300[free] fetch worker raised: %s", exc)
+                continue
+            if frame is not None and not frame.empty:
+                fetched[code] = frame
+
+    if not fetched:
+        return {}
+
+    # No amount available from Sina → vwap approximated as (O+H+L+C)/4.
+    panel = _wide_from_fetched(fetched, include_amount=False)
+    if all(k in panel for k in ("open", "high", "low", "close")):
+        panel["vwap"] = (
+            panel["open"] + panel["high"] + panel["low"] + panel["close"]
+        ) / 4.0
     return panel
 
 
