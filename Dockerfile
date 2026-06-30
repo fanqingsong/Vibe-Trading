@@ -28,8 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (install before copying code for layer caching)
+# mootdx pins httpx<0.26 (conflicts with MCP/fastmcp); install mootdx itself
+# without deps first, then let the normal resolver handle everything else
+# (including mootdx's real deps like tdxpy) with the modern httpx.
 COPY agent/requirements.txt agent/requirements.txt
-RUN pip install --no-cache-dir -r agent/requirements.txt
+RUN pip install --no-cache-dir --no-deps "mootdx>=0.11.0" \
+    && pip install --no-cache-dir -r agent/requirements.txt
 
 # Copy project
 COPY pyproject.toml LICENSE README.md ./

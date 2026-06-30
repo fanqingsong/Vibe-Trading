@@ -159,8 +159,17 @@ def get_loader_cls_with_fallback(source: str) -> Type[Any]:
     if instance is not None and instance.is_available():
         return loader_cls
 
-    # Source unavailable — try same-market fallback
-    for market in loader_cls.markets:
+    # Source unavailable — try same-market fallback.
+    # Sort markets so the most specific one (a_share / us_equity / hk_equity)
+    # is tried before broad ones (futures / fund / macro). Without this, an
+    # A-share query routing to tushare could match the "futures" market first
+    # and return akshare (whose futures chain has no mootdx), bypassing the
+    # TCP-resilient mootdx loader in the a_share chain.
+    _market_priority = {"a_share": 0, "us_equity": 0, "hk_equity": 0, "crypto": 0}
+    ordered_markets = sorted(
+        loader_cls.markets, key=lambda m: _market_priority.get(m, 9)
+    )
+    for market in ordered_markets:
         try:
             fallback = resolve_loader(market)
             logger.warning(

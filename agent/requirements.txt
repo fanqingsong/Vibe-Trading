@@ -34,6 +34,11 @@ requests>=2.31.0
 yfinance>=0.2.30
 akshare>=1.12.0
 ccxt>=4.0.0
+# mootdx runtime deps (mootdx itself is installed via --no-deps in Dockerfile
+# because it pins httpx<0.26, conflicting with MCP/fastmcp).
+tdxpy>=0.2.5
+tenacity>=8.1.0
+prettytable>=3.5.0
 
 # REST API & SSE
 fastapi>=0.104.0
