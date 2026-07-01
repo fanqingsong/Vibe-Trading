@@ -124,8 +124,8 @@ class SwarmRuntime:
         # provider layer uses (src/providers/llm.py:136,195) — that way an
         # override applied via os.environ still shows up. Per-agent overrides
         # remain visible on SwarmAgentSpec.model_name.
-        run.provider = (os.getenv("LANGCHAIN_PROVIDER") or "").strip().lower() or None
-        run.model = (os.getenv("LANGCHAIN_MODEL_NAME") or "").strip() or None
+        run.provider = (os.getenv("LLM_PROVIDER") or "").strip().lower() or None
+        run.model = (os.getenv("LLM_MODEL_NAME") or "").strip() or None
 
         self._store.create_run(run)
 

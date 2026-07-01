@@ -38,8 +38,8 @@ def test_codex_base_url_is_restricted_to_chatgpt_endpoint() -> None:
 
 def test_build_llm_returns_codex_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(llm_mod, "_dotenv_loaded", True)
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "openai-codex")
-    monkeypatch.setenv("LANGCHAIN_MODEL_NAME", DEFAULT_CODEX_MODEL)
+    monkeypatch.setenv("LLM_PROVIDER", "openai-codex")
+    monkeypatch.setenv("LLM_MODEL_NAME", DEFAULT_CODEX_MODEL)
     monkeypatch.setenv("OPENAI_CODEX_BASE_URL", DEFAULT_CODEX_URL)
 
     adapter = llm_mod.build_llm()

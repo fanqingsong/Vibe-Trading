@@ -105,13 +105,13 @@ _SESSION_STORE_CACHE: Any = None
 
 def _probe_model_name() -> str:
     """Return the configured LLM model id, or a placeholder."""
-    name = os.environ.get("LANGCHAIN_MODEL_NAME") or os.environ.get("OPENAI_MODEL")
+    name = os.environ.get("LLM_MODEL_NAME") or os.environ.get("OPENAI_MODEL")
     if name:
         return name
     try:
         text = _ENV_PATH.read_text(encoding="utf-8")
         for line in text.splitlines():
-            if line.startswith("LANGCHAIN_MODEL_NAME="):
+            if line.startswith("LLM_MODEL_NAME="):
                 return line.split("=", 1)[1].strip()
     except OSError:
         pass

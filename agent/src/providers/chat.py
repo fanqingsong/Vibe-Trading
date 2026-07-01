@@ -197,8 +197,8 @@ class ChatLLM:
                 return LLMResponse(content="", tool_calls=[], finish_reason="stop")
             return self._parse_response(accumulated)
         except Exception as exc:
-            provider = os.getenv("LANGCHAIN_PROVIDER", "openai").strip().lower() or "openai"
-            model = self.model_name or os.getenv("LANGCHAIN_MODEL_NAME", "").strip() or "(unset)"
+            provider = os.getenv("LLM_PROVIDER", "openai").strip().lower() or "openai"
+            model = self.model_name or os.getenv("LLM_MODEL_NAME", "").strip() or "(unset)"
             raise ProviderStreamError(provider=provider, model=model, original=exc) from exc
 
     @staticmethod

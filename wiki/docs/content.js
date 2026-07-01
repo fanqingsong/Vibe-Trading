@@ -92,8 +92,8 @@ vibe-trading</code></pre>
             id: "env",
             title: "Environment file",
             body: `
-              <pre><code>LANGCHAIN_PROVIDER=deepseek
-LANGCHAIN_MODEL_NAME=deepseek-v4-pro
+              <pre><code>LLM_PROVIDER=deepseek
+LLM_MODEL_NAME=deepseek-v4-pro
 TUSHARE_TOKEN=your-token
 TIMEOUT_SECONDS=2400</code></pre>
               <p>Run <code>vibe-trading init</code> to bootstrap the local configuration interactively.</p>

@@ -425,7 +425,7 @@ vibe-trading-mcp               # start MCP server (stdio)
 - **مفتاح API لنموذج LLM** من أي مزود مدعوم — أو التشغيل محلياً عبر **Ollama** (لا يحتاج مفتاحاً)
 - **Python 3.11+** للمسار B
 - **Docker** للمسار A
-- يمكن استخدام OpenAI Codex أيضاً عبر ChatGPT OAuth: اضبط `LANGCHAIN_PROVIDER=openai-codex`، ثم شغل `vibe-trading provider login openai-codex`. هذا لا يستخدم `OPENAI_API_KEY`.
+- يمكن استخدام OpenAI Codex أيضاً عبر ChatGPT OAuth: اضبط `LLM_PROVIDER=openai-codex`، ثم شغل `vibe-trading provider login openai-codex`. هذا لا يستخدم `OPENAI_API_KEY`.
 
 > **مزودو LLM المدعومون:** OpenRouter, OpenAI, DeepSeek, Gemini, Groq, DashScope/Qwen, Zhipu, Moonshot/Kimi, MiniMax, Xiaomi MIMO, Z.ai, Ollama (local). راجع `.env.example` للإعداد.
 
@@ -506,10 +506,10 @@ npx clawhub@latest install vibe-trading --force
 
 | المتغير | مطلوب | الوصف |
 |----------|:--------:|-------------|
-| `LANGCHAIN_PROVIDER` | نعم | اسم المزود (`openrouter`, `deepseek`, `groq`, `ollama`, إلخ) |
+| `LLM_PROVIDER` | نعم | اسم المزود (`openrouter`, `deepseek`, `groq`, `ollama`, إلخ) |
 | `<PROVIDER>_API_KEY` | نعم* | مفتاح API (`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, إلخ) |
 | `<PROVIDER>_BASE_URL` | نعم | عنوان URL لنقطة نهاية API |
-| `LANGCHAIN_MODEL_NAME` | نعم | اسم النموذج (مثل `deepseek-v4-pro`) |
+| `LLM_MODEL_NAME` | نعم | اسم النموذج (مثل `deepseek-v4-pro`) |
 | `TUSHARE_TOKEN` | لا | رمز Tushare Pro لبيانات أسهم A (يرجع إلى AKShare عند الحاجة) |
 | `TIMEOUT_SECONDS` | لا | مهلة استدعاء LLM، الافتراضي 120s |
 | `API_AUTH_KEY` | موصى به للنشر الشبكي | Bearer token مطلوب عندما يكون API قابلاً للوصول من عملاء غير محليين |

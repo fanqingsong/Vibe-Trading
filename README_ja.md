@@ -425,7 +425,7 @@ vibe-trading-mcp               # start MCP server (stdio)
 - 対応 provider の **LLM API key**、または **Ollama** によるローカル実行（key 不要）
 - Path B では **Python 3.11+**
 - Path A では **Docker**
-- OpenAI Codex は ChatGPT OAuth でも利用できます。`LANGCHAIN_PROVIDER=openai-codex` を設定し、`vibe-trading provider login openai-codex` を実行してください。`OPENAI_API_KEY` は使いません。
+- OpenAI Codex は ChatGPT OAuth でも利用できます。`LLM_PROVIDER=openai-codex` を設定し、`vibe-trading provider login openai-codex` を実行してください。`OPENAI_API_KEY` は使いません。
 
 > **Supported LLM providers:** OpenRouter、OpenAI、DeepSeek、Gemini、Groq、DashScope/Qwen、Zhipu、Moonshot/Kimi、MiniMax、Xiaomi MIMO、Z.ai、Ollama（local）。設定は `.env.example` を参照してください。
 
@@ -506,10 +506,10 @@ skill + MCP config が agent の skills directory にダウンロードされま
 
 | Variable | Required | Description |
 |----------|:--------:|-------------|
-| `LANGCHAIN_PROVIDER` | Yes | Provider name（`openrouter`, `deepseek`, `groq`, `ollama` など） |
+| `LLM_PROVIDER` | Yes | Provider name（`openrouter`, `deepseek`, `groq`, `ollama` など） |
 | `<PROVIDER>_API_KEY` | Yes* | API key（`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY` など） |
 | `<PROVIDER>_BASE_URL` | Yes | API endpoint URL |
-| `LANGCHAIN_MODEL_NAME` | Yes | Model name（例: `deepseek-v4-pro`） |
+| `LLM_MODEL_NAME` | Yes | Model name（例: `deepseek-v4-pro`） |
 | `TUSHARE_TOKEN` | No | A-share data 用 Tushare Pro token（AKShare に fallback） |
 | `TIMEOUT_SECONDS` | No | LLM call timeout、既定 120s |
 | `API_AUTH_KEY` | Recommended for network deployments | API が非ローカル client から到達可能な場合に必要な Bearer token |

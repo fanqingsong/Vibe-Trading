@@ -104,8 +104,8 @@ def _build_status_parts(stats: _SessionStats) -> list[str]:
     Returns:
         List of status text segments.
     """
-    provider = os.getenv("LANGCHAIN_PROVIDER", "")
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "")
+    provider = os.getenv("LLM_PROVIDER", "")
+    model = os.getenv("LLM_MODEL_NAME", "")
     model_short = model.split("/")[-1] if "/" in model else model
     label = f"{provider}/{model_short}" if provider else model_short or "unknown"
 
@@ -1489,8 +1489,8 @@ def _build_welcome_panel(term_width: Optional[int] = None) -> Panel:
     term_width = term_width or _terminal_width()
     compact = term_width < 64
     widths = _welcome_widths(term_width)
-    provider = os.getenv("LANGCHAIN_PROVIDER", "(not set)")
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "(not set)")
+    provider = os.getenv("LLM_PROVIDER", "(not set)")
+    model = os.getenv("LLM_MODEL_NAME", "(not set)")
     key_env = _provider_key_env(provider)
     key_value = os.getenv(key_env or "")
     credential_ready = provider in {"ollama", "openai-codex"} or bool(key_value)
@@ -1677,8 +1677,8 @@ def _show_settings() -> None:
     term_width = _terminal_width()
     compact = term_width < 104
     value_limit = max(18, min(56, term_width - 28))
-    provider = os.getenv("LANGCHAIN_PROVIDER", "(not set)")
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "(not set)")
+    provider = os.getenv("LLM_PROVIDER", "(not set)")
+    model = os.getenv("LLM_MODEL_NAME", "(not set)")
     provider_key_env = _provider_key_env(provider)
     provider_base_env = _provider_base_env(provider)
     provider_key = os.getenv(provider_key_env or "")
@@ -1694,7 +1694,7 @@ def _show_settings() -> None:
     runtime_table = Table.grid(expand=True)
     runtime_table.add_column(width=13, style="dim")
     runtime_table.add_column(ratio=1)
-    runtime_table.add_row("Temperature", os.getenv("LANGCHAIN_TEMPERATURE", "0.0"))
+    runtime_table.add_row("Temperature", os.getenv("LLM_TEMPERATURE", "0.0"))
     runtime_table.add_row("Timeout", os.getenv("TIMEOUT_SECONDS", "2400") + "s")
     runtime_table.add_row("Retries", os.getenv("MAX_RETRIES", "(not set)"))
 
@@ -4266,8 +4266,8 @@ def _validate_api_key(api_key: str, expected_prefix: str | None) -> bool:
 def _render_env_content(config: dict[str, str]) -> str:
     """Render .env content with stable ordering."""
     ordered_keys = [
-        "LANGCHAIN_TEMPERATURE",
-        "LANGCHAIN_PROVIDER",
+        "LLM_TEMPERATURE",
+        "LLM_PROVIDER",
         "OPENROUTER_API_KEY",
         "OPENROUTER_BASE_URL",
         "DEEPSEEK_API_KEY",
@@ -4292,7 +4292,7 @@ def _render_env_content(config: dict[str, str]) -> str:
         "ZAI_API_KEY",
         "ZAI_BASE_URL",
         "OLLAMA_BASE_URL",
-        "LANGCHAIN_MODEL_NAME",
+        "LLM_MODEL_NAME",
         "TUSHARE_TOKEN",
         "TIMEOUT_SECONDS",
         "MAX_RETRIES",
@@ -4479,9 +4479,9 @@ def cmd_init() -> int:
     key_placeholder = selected["key_placeholder"]
 
     env_values: dict[str, str] = {
-        "LANGCHAIN_TEMPERATURE": "0.0",
-        "LANGCHAIN_PROVIDER": provider,
-        "LANGCHAIN_MODEL_NAME": default_model,
+        "LLM_TEMPERATURE": "0.0",
+        "LLM_PROVIDER": provider,
+        "LLM_MODEL_NAME": default_model,
         "TIMEOUT_SECONDS": "120",
         "MAX_RETRIES": "2",
     }
@@ -4512,7 +4512,7 @@ def cmd_init() -> int:
         show_default=True,
     ).strip()
 
-    env_values["LANGCHAIN_MODEL_NAME"] = Prompt.ask(
+    env_values["LLM_MODEL_NAME"] = Prompt.ask(
         "Select default model",
         default=default_model,
         show_default=True,

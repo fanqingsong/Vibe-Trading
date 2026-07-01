@@ -92,6 +92,11 @@ def test_get_data_source_settings_defaults(client: TestClient) -> None:
     assert body["tushare_token_hint"] is None
     assert body["baostock_supported"] is False
     assert body["stored_in"] == "database"
+    # New optional data-source fields have sensible defaults.
+    assert body["ccxt_exchange"] == "binance"
+    assert body["futu_host"] == ""
+    assert body["futu_port"] == 0
+    assert body["futu_configured"] is False
 
 
 def test_update_data_source_settings_persists_tushare_token(client: TestClient) -> None:
@@ -108,6 +113,51 @@ def test_update_data_source_settings_persists_tushare_token(client: TestClient) 
 
     follow_up = client.get("/settings/data-sources")
     assert follow_up.json()["tushare_token_configured"] is True
+
+
+def test_update_data_source_settings_persists_ccxt_and_futu(client: TestClient) -> None:
+    """CCXT exchange + Futu host/port are plain settings persisted + reflected."""
+    response = client.put(
+        "/settings/data-sources",
+        json={
+            "ccxt_exchange": "okx",
+            "futu_host": "127.0.0.1",
+            "futu_port": 11111,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ccxt_exchange"] == "okx"
+    assert body["futu_host"] == "127.0.0.1"
+    assert body["futu_port"] == 11111
+    assert body["futu_configured"] is True
+
+    # Values survive a fresh GET (DB-backed).
+    follow_up = client.get("/settings/data-sources")
+    fu = follow_up.json()
+    assert fu["ccxt_exchange"] == "okx"
+    assert fu["futu_host"] == "127.0.0.1"
+    assert fu["futu_port"] == 11111
+    assert fu["futu_configured"] is True
+
+
+def test_update_data_source_settings_clears_futu_with_empty_host(client: TestClient) -> None:
+    client.put(
+        "/settings/data-sources",
+        json={"futu_host": "127.0.0.1", "futu_port": 11111},
+    )
+
+    # Empty host + port 0 disables Futu.
+    response = client.put(
+        "/settings/data-sources",
+        json={"futu_host": "", "futu_port": 0},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["futu_host"] == ""
+    assert body["futu_port"] == 0
+    assert body["futu_configured"] is False
 
 
 def test_settings_response_never_exposes_configured_secret_hints(

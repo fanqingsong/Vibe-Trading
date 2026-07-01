@@ -89,7 +89,7 @@ def test_stream_failure_raises_provider_error_without_silent_fallback() -> None:
 
     with patch.dict(
         os.environ,
-        {"LANGCHAIN_PROVIDER": "deepseek", "LANGCHAIN_MODEL_NAME": "deepseek-v4-pro"},
+        {"LLM_PROVIDER": "deepseek", "LLM_MODEL_NAME": "deepseek-v4-pro"},
         clear=True,
     ):
         with pytest.raises(ProviderStreamError) as excinfo:
@@ -106,8 +106,8 @@ def test_stream_error_redacts_configured_secret_values() -> None:
     with patch.dict(
         os.environ,
         {
-            "LANGCHAIN_PROVIDER": "deepseek",
-            "LANGCHAIN_MODEL_NAME": "deepseek-v4-pro",
+            "LLM_PROVIDER": "deepseek",
+            "LLM_MODEL_NAME": "deepseek-v4-pro",
             "DEEPSEEK_API_KEY": "sk-live-secret-123456",
         },
         clear=True,

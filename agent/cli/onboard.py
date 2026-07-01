@@ -353,7 +353,7 @@ def run_onboarding(*, console: Console | None = None) -> Path | None:
     cons = console or get_console()
     _intro_header(cons)
 
-    values: dict[str, str] = {"LANGCHAIN_TEMPERATURE": "0.0", "MAX_RETRIES": "2"}
+    values: dict[str, str] = {"LLM_TEMPERATURE": "0.0", "MAX_RETRIES": "2"}
     state: dict[str, object] = {"provider": None, "model": None, "key": None}
 
     def step_provider() -> object:
@@ -364,7 +364,7 @@ def run_onboarding(*, console: Console | None = None) -> Path | None:
             return result
         provider = next(p for p in PROVIDERS if p.key == result)
         state["provider"] = provider
-        values["LANGCHAIN_PROVIDER"] = provider.key
+        values["LLM_PROVIDER"] = provider.key
         values[provider.base_env] = provider.base_url
         _save_partial(values)
         return "ok"
@@ -393,7 +393,7 @@ def run_onboarding(*, console: Console | None = None) -> Path | None:
         else:
             model = str(choice)
         state["model"] = model
-        values["LANGCHAIN_MODEL_NAME"] = model
+        values["LLM_MODEL_NAME"] = model
         _save_partial(values)
         return "ok"
 

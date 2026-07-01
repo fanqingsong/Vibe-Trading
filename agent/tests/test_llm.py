@@ -24,7 +24,7 @@ class TestSyncProviderEnv:
         import src.providers.llm as llm_mod
         llm_mod._dotenv_loaded = True  # pretend already loaded
 
-        clean = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "LANGCHAIN_", "DEEPSEEK_", "GROQ_", "OLLAMA_", "DASHSCOPE_", "ZAI_"))}
+        clean = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "LLM_", "DEEPSEEK_", "GROQ_", "OLLAMA_", "DASHSCOPE_", "ZAI_"))}
         clean.update(env)
         with patch.dict(os.environ, clean, clear=True):
             _sync_provider_env()
@@ -42,7 +42,7 @@ class TestSyncProviderEnv:
 
     def test_openai_codex_provider_does_not_map_oauth_token_to_api_key(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "openai-codex",
+            "LLM_PROVIDER": "openai-codex",
             "OPENAI_CODEX_BASE_URL": "https://chatgpt.com/backend-api/codex/responses",
         })
         assert result["OPENAI_API_KEY"] == ""
@@ -50,7 +50,7 @@ class TestSyncProviderEnv:
 
     def test_deepseek_provider(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "deepseek",
+            "LLM_PROVIDER": "deepseek",
             "DEEPSEEK_API_KEY": "ds-key-123",
             "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
         })
@@ -59,7 +59,7 @@ class TestSyncProviderEnv:
 
     def test_groq_provider(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "groq",
+            "LLM_PROVIDER": "groq",
             "GROQ_API_KEY": "gsk-test",
             "GROQ_BASE_URL": "https://api.groq.com/openai/v1",
         })
@@ -68,7 +68,7 @@ class TestSyncProviderEnv:
 
     def test_ollama_no_key_required(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "ollama",
+            "LLM_PROVIDER": "ollama",
             "OLLAMA_BASE_URL": "http://localhost:11434/v1",
         })
         # Ollama uses "ollama" as fallback key
@@ -77,7 +77,7 @@ class TestSyncProviderEnv:
 
     def test_ollama_base_url_appends_v1(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "ollama",
+            "LLM_PROVIDER": "ollama",
             "OLLAMA_BASE_URL": "http://23.152.56.42:11434/",
         })
         assert result["OPENAI_API_BASE"] == "http://23.152.56.42:11434/v1"
@@ -85,7 +85,7 @@ class TestSyncProviderEnv:
 
     def test_qwen_alias_to_dashscope(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "qwen",
+            "LLM_PROVIDER": "qwen",
             "DASHSCOPE_API_KEY": "qwen-key",
             "DASHSCOPE_BASE_URL": "https://dashscope.aliyuncs.com/v1",
         })
@@ -93,7 +93,7 @@ class TestSyncProviderEnv:
 
     def test_zai_provider(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "zai",
+            "LLM_PROVIDER": "zai",
             "ZAI_API_KEY": "zai-key-test",
             "ZAI_BASE_URL": "https://api.z.ai/api/coding/paas/v4",
         })
@@ -102,7 +102,7 @@ class TestSyncProviderEnv:
 
     def test_unknown_provider_falls_back_to_openai(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "unknown_provider_xyz",
+            "LLM_PROVIDER": "unknown_provider_xyz",
             "OPENAI_API_KEY": "sk-fallback",
         })
         assert result["OPENAI_API_KEY"] == "sk-fallback"
@@ -110,14 +110,14 @@ class TestSyncProviderEnv:
     def test_provider_key_fallback_to_openai_key(self) -> None:
         """If provider-specific key is missing, fall back to OPENAI_API_KEY."""
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "deepseek",
+            "LLM_PROVIDER": "deepseek",
             "OPENAI_API_KEY": "sk-shared",
         })
         assert result["OPENAI_API_KEY"] == "sk-shared"
 
     def test_minimax_provider(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "minimax",
+            "LLM_PROVIDER": "minimax",
             "MINIMAX_API_KEY": "minimax-key-123",
             "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
         })
@@ -126,7 +126,7 @@ class TestSyncProviderEnv:
 
     def test_minimax_base_url_in_openai_base_url(self) -> None:
         result = self._run_sync({
-            "LANGCHAIN_PROVIDER": "minimax",
+            "LLM_PROVIDER": "minimax",
             "MINIMAX_API_KEY": "minimax-key",
             "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
         })
@@ -142,7 +142,7 @@ class TestMinimaxTemperature:
     """MiniMax requires temperature > 0; build_llm should clamp the default."""
 
     def test_minimax_temperature_clamped_from_zero(self) -> None:
-        """When LANGCHAIN_TEMPERATURE=0.0 and provider=minimax, temperature must be clamped to 0.01."""
+        """When LLM_TEMPERATURE=0.0 and provider=minimax, temperature must be clamped to 0.01."""
         import src.providers.llm as llm_mod
         llm_mod._dotenv_loaded = True
 
@@ -153,11 +153,11 @@ class TestMinimaxTemperature:
                 captured["temperature"] = float(kwargs.get("temperature", -1))
 
         env = {
-            "LANGCHAIN_PROVIDER": "minimax",
+            "LLM_PROVIDER": "minimax",
             "MINIMAX_API_KEY": "minimax-key",
             "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
-            "LANGCHAIN_MODEL_NAME": "MiniMax-M3",
-            "LANGCHAIN_TEMPERATURE": "0.0",
+            "LLM_MODEL_NAME": "MiniMax-M3",
+            "LLM_TEMPERATURE": "0.0",
         }
         with patch.dict(os.environ, env, clear=True):
             with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
@@ -178,11 +178,11 @@ class TestMinimaxTemperature:
                 captured["temperature"] = float(kwargs.get("temperature", -1))
 
         env = {
-            "LANGCHAIN_PROVIDER": "minimax",
+            "LLM_PROVIDER": "minimax",
             "MINIMAX_API_KEY": "minimax-key",
             "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
-            "LANGCHAIN_MODEL_NAME": "MiniMax-M3",
-            "LANGCHAIN_TEMPERATURE": "0.7",
+            "LLM_MODEL_NAME": "MiniMax-M3",
+            "LLM_TEMPERATURE": "0.7",
         }
         with patch.dict(os.environ, env, clear=True):
             with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
@@ -191,7 +191,7 @@ class TestMinimaxTemperature:
 
 
 class TestReasoningEffortPassthrough:
-    """LANGCHAIN_REASONING_EFFORT is forwarded as extra_body.reasoning.effort
+    """LLM_REASONING_EFFORT is forwarded as extra_body.reasoning.effort
     to the underlying OpenAI-compatible client. Used for OpenRouter-style
     relays that require opt-in to enable thinking."""
 
@@ -212,29 +212,29 @@ class TestReasoningEffortPassthrough:
 
     def test_effort_unset_leaves_extra_body_none(self) -> None:
         captured = self._capture({
-            "LANGCHAIN_PROVIDER": "openai",
+            "LLM_PROVIDER": "openai",
             "OPENAI_API_KEY": "sk-test",
-            "LANGCHAIN_MODEL_NAME": "gpt-4",
+            "LLM_MODEL_NAME": "gpt-4",
         })
         assert captured["extra_body"] is None
 
     def test_effort_medium_forwarded_as_extra_body(self) -> None:
         captured = self._capture({
-            "LANGCHAIN_PROVIDER": "openrouter",
+            "LLM_PROVIDER": "openrouter",
             "OPENROUTER_API_KEY": "or-test",
             "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-            "LANGCHAIN_MODEL_NAME": "moonshotai/kimi-k2-thinking",
-            "LANGCHAIN_REASONING_EFFORT": "medium",
+            "LLM_MODEL_NAME": "moonshotai/kimi-k2-thinking",
+            "LLM_REASONING_EFFORT": "medium",
         })
         assert captured["extra_body"] == {"reasoning": {"effort": "medium"}}
 
     def test_effort_case_insensitive(self) -> None:
         captured = self._capture({
-            "LANGCHAIN_PROVIDER": "openrouter",
+            "LLM_PROVIDER": "openrouter",
             "OPENROUTER_API_KEY": "or-test",
             "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-            "LANGCHAIN_MODEL_NAME": "moonshotai/kimi-k2-thinking",
-            "LANGCHAIN_REASONING_EFFORT": "HIGH",
+            "LLM_MODEL_NAME": "moonshotai/kimi-k2-thinking",
+            "LLM_REASONING_EFFORT": "HIGH",
         })
         assert captured["extra_body"]["reasoning"]["effort"] == "high"
 

@@ -422,7 +422,7 @@ vibe-trading-mcp               # start MCP server (stdio)
 - 任意受支持 provider 的 **LLM API key**，或使用 **Ollama** 本地运行（无需 key）
 - 路径 B 需要 **Python 3.11+**
 - 路径 A 需要 **Docker**
-- OpenAI Codex 也可通过 ChatGPT OAuth 使用：设置 `LANGCHAIN_PROVIDER=openai-codex`，然后运行 `vibe-trading provider login openai-codex`。它不使用 `OPENAI_API_KEY`。
+- OpenAI Codex 也可通过 ChatGPT OAuth 使用：设置 `LLM_PROVIDER=openai-codex`，然后运行 `vibe-trading provider login openai-codex`。它不使用 `OPENAI_API_KEY`。
 
 > **支持的 LLM providers：** OpenRouter、OpenAI、DeepSeek、Gemini、Groq、DashScope/Qwen、Zhipu、Moonshot/Kimi、MiniMax、Xiaomi MIMO、Z.ai、Ollama（本地）。配置见 `.env.example`。
 
@@ -503,10 +503,10 @@ skill + MCP config 会下载到你的智能体 skills 目录。详情见 [ClawHu
 
 | 变量 | 必需 | 说明 |
 |------|:----:|------|
-| `LANGCHAIN_PROVIDER` | Yes | Provider 名称（`openrouter`, `deepseek`, `groq`, `ollama` 等） |
+| `LLM_PROVIDER` | Yes | Provider 名称（`openrouter`, `deepseek`, `groq`, `ollama` 等） |
 | `<PROVIDER>_API_KEY` | Yes* | API key（`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY` 等） |
 | `<PROVIDER>_BASE_URL` | Yes | API endpoint URL |
-| `LANGCHAIN_MODEL_NAME` | Yes | 模型名称（例如 `deepseek-v4-pro`） |
+| `LLM_MODEL_NAME` | Yes | 模型名称（例如 `deepseek-v4-pro`） |
 | `TUSHARE_TOKEN` | No | A 股数据的 Tushare Pro token（会 fallback 到 AKShare） |
 | `TIMEOUT_SECONDS` | No | LLM 调用超时，默认 120s |
 | `API_AUTH_KEY` | 网络部署推荐 | API 可被非本地客户端访问时要求的 Bearer token |

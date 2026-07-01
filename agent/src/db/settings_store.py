@@ -146,10 +146,10 @@ def upsert_settings(
 # step and by the inert-mode env fallback.
 CATEGORY_ENV_KEYS: dict[str, tuple[str, ...]] = {
     CATEGORY_LLM: (
-        "LANGCHAIN_PROVIDER",
-        "LANGCHAIN_MODEL_NAME",
-        "LANGCHAIN_TEMPERATURE",
-        "LANGCHAIN_REASONING_EFFORT",
+        "LLM_PROVIDER",
+        "LLM_MODEL_NAME",
+        "LLM_TEMPERATURE",
+        "LLM_REASONING_EFFORT",
         "TIMEOUT_SECONDS",
         "MAX_RETRIES",
         # Provider-specific API keys / base URLs (only the active provider's
@@ -292,7 +292,7 @@ def seed_all_categories_if_empty(env_source: Mapping[str, str] | None = None) ->
 def sync_db_settings_to_runtime_env() -> None:
     """Load all settings from the DB into ``os.environ`` at startup.
 
-    Every existing ``os.getenv('LANGCHAIN_PROVIDER')`` /
+    Every existing ``os.getenv('LLM_PROVIDER')`` /
     ``os.getenv('SMTP_HOST')`` call site keeps working unchanged — they still
     read ``os.environ``, but the source of truth is now the database. No-op in
     inert (no-DB) mode.

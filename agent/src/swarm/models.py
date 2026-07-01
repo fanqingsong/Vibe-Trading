@@ -162,12 +162,12 @@ class SwarmRun(BaseModel):
         total_output_tokens: Cumulative output tokens across all workers.
         provider: LLM provider name in effect when the run started
             (e.g. ``"openai"``, ``"anthropic"``, ``"deepseek"``). Captured from
-            ``LANGCHAIN_PROVIDER`` at run-creation time. ``None`` if the
+            ``LLM_PROVIDER`` at run-creation time. ``None`` if the
             provider could not be resolved. Per-agent overrides — declared via
             :attr:`SwarmAgentSpec.model_name` — are not reflected here; this
             field is the run-level default.
         model: LLM model name in effect when the run started, captured from
-            ``LANGCHAIN_MODEL_NAME``. Same scoping rules as :attr:`provider`.
+            ``LLM_MODEL_NAME``. Same scoping rules as :attr:`provider`.
         grounding_data: Pre-fetched OHLCV bars for any suffixed stock or
             crypto symbols mentioned in :attr:`user_vars`. Captured once at
             run-creation time by :mod:`src.swarm.grounding` so workers see

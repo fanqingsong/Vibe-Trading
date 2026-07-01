@@ -86,8 +86,8 @@ def test_unset_model_runtime_error_surfaces(tmp_path, monkeypatch):
     """A RuntimeError raised above the worker try/except must surface too."""
 
     def boom(*a, **k):
-        raise RuntimeError("LANGCHAIN_MODEL_NAME is not set")
+        raise RuntimeError("LLM_MODEL_NAME is not set")
 
     monkeypatch.setattr(rt, "run_worker", boom)
     run = _run(tmp_path)
-    assert "LANGCHAIN_MODEL_NAME" in json.dumps(mcp_server._run_to_dict(run))
+    assert "LLM_MODEL_NAME" in json.dumps(mcp_server._run_to_dict(run))

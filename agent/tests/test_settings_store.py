@@ -21,36 +21,36 @@ def test_get_settings_empty_category_returns_empty_dict(db_session) -> None:
 
 
 def test_upsert_then_get_roundtrip(db_session) -> None:
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "openrouter", "LANGCHAIN_TEMPERATURE": "0.3"})
+    store.upsert_settings("llm", {"LLM_PROVIDER": "openrouter", "LLM_TEMPERATURE": "0.3"})
     result = store.get_settings("llm")
-    assert result["LANGCHAIN_PROVIDER"] == "openrouter"
-    assert result["LANGCHAIN_TEMPERATURE"] == "0.3"
+    assert result["LLM_PROVIDER"] == "openrouter"
+    assert result["LLM_TEMPERATURE"] == "0.3"
 
 
 def test_upsert_updates_existing_row_in_place(db_session) -> None:
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "openai"})
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "deepseek"})
-    assert store.get_settings("llm") == {"LANGCHAIN_PROVIDER": "deepseek"}
+    store.upsert_settings("llm", {"LLM_PROVIDER": "openai"})
+    store.upsert_settings("llm", {"LLM_PROVIDER": "deepseek"})
+    assert store.get_settings("llm") == {"LLM_PROVIDER": "deepseek"}
 
 
 def test_upsert_empty_value_deletes_row(db_session) -> None:
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "openai", "LANGCHAIN_MODEL_NAME": "gpt-4"})
-    store.upsert_settings("llm", {"LANGCHAIN_MODEL_NAME": ""})
+    store.upsert_settings("llm", {"LLM_PROVIDER": "openai", "LLM_MODEL_NAME": "gpt-4"})
+    store.upsert_settings("llm", {"LLM_MODEL_NAME": ""})
     result = store.get_settings("llm")
-    assert "LANGCHAIN_MODEL_NAME" not in result
-    assert result["LANGCHAIN_PROVIDER"] == "openai"
+    assert "LLM_MODEL_NAME" not in result
+    assert result["LLM_PROVIDER"] == "openai"
 
 
 def test_get_setting_single_value_with_default(db_session) -> None:
     assert store.get_setting("llm", "MISSING_KEY", "fallback") == "fallback"
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "groq"})
-    assert store.get_setting("llm", "LANGCHAIN_PROVIDER") == "groq"
+    store.upsert_settings("llm", {"LLM_PROVIDER": "groq"})
+    assert store.get_setting("llm", "LLM_PROVIDER") == "groq"
 
 
 def test_categories_are_isolated(db_session) -> None:
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "openai"})
+    store.upsert_settings("llm", {"LLM_PROVIDER": "openai"})
     store.upsert_settings("email", {"SMTP_HOST": "smtp.qq.com"})
-    assert store.get_settings("llm") == {"LANGCHAIN_PROVIDER": "openai"}
+    assert store.get_settings("llm") == {"LLM_PROVIDER": "openai"}
     assert store.get_settings("email") == {"SMTP_HOST": "smtp.qq.com"}
 
 
@@ -62,7 +62,7 @@ def test_categories_are_isolated(db_session) -> None:
 def test_secret_keys_flagged_on_insert(db_session) -> None:
     store.upsert_settings(
         "llm",
-        {"OPENAI_API_KEY": "sk-secret", "LANGCHAIN_PROVIDER": "openai"},
+        {"OPENAI_API_KEY": "sk-secret", "LLM_PROVIDER": "openai"},
         secret_keys={"OPENAI_API_KEY"},
     )
     from sqlalchemy import select
@@ -73,7 +73,7 @@ def test_secret_keys_flagged_on_insert(db_session) -> None:
     with get_session() as session:
         rows = {r.key: r.is_secret for r in session.execute(select(Setting).where(Setting.category == "llm")).scalars()}
     assert rows["OPENAI_API_KEY"] is True
-    assert rows["LANGCHAIN_PROVIDER"] is False
+    assert rows["LLM_PROVIDER"] is False
 
 
 def test_secret_flag_updated_on_overwrite(db_session) -> None:
@@ -98,25 +98,25 @@ def test_secret_flag_updated_on_overwrite(db_session) -> None:
 
 
 def test_seed_imports_from_env_when_empty(db_session, monkeypatch) -> None:
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "zhipu")
-    monkeypatch.setenv("LANGCHAIN_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("LLM_PROVIDER", "zhipu")
+    monkeypatch.setenv("LLM_MODEL_NAME", "glm-5.1")
     monkeypatch.setenv("ZHIPU_API_KEY", "fake-key")
 
     seeded = store.seed_settings_from_env_if_empty("llm")
     assert seeded is True
     result = store.get_settings("llm")
-    assert result["LANGCHAIN_PROVIDER"] == "zhipu"
+    assert result["LLM_PROVIDER"] == "zhipu"
     assert result["ZHIPU_API_KEY"] == "fake-key"
 
 
 def test_seed_is_idempotent_when_rows_exist(db_session, monkeypatch) -> None:
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "openai"})
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "deepseek")
+    store.upsert_settings("llm", {"LLM_PROVIDER": "openai"})
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
 
     seeded = store.seed_settings_from_env_if_empty("llm")
     assert seeded is False
     # Original value preserved — seed did not overwrite.
-    assert store.get_settings("llm") == {"LANGCHAIN_PROVIDER": "openai"}
+    assert store.get_settings("llm") == {"LLM_PROVIDER": "openai"}
 
 
 def test_seed_noop_when_env_keys_absent(db_session) -> None:
@@ -126,7 +126,7 @@ def test_seed_noop_when_env_keys_absent(db_session) -> None:
 
 
 def test_seed_all_categories(db_session, monkeypatch) -> None:
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "groq")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
     monkeypatch.setenv("SMTP_HOST", "smtp.qq.com")
     monkeypatch.setenv("TUSHARE_TOKEN", "ts-token")
 
@@ -142,14 +142,14 @@ def test_seed_all_categories(db_session, monkeypatch) -> None:
 
 
 def test_sync_db_settings_to_runtime_env_populates_os_environ(db_session, monkeypatch) -> None:
-    monkeypatch.delenv("LANGCHAIN_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("SMTP_HOST", raising=False)
 
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "moonshot"})
+    store.upsert_settings("llm", {"LLM_PROVIDER": "moonshot"})
     store.upsert_settings("email", {"SMTP_HOST": "smtp.gmail.com"})
 
     store.sync_db_settings_to_runtime_env()
-    assert os.environ["LANGCHAIN_PROVIDER"] == "moonshot"
+    assert os.environ["LLM_PROVIDER"] == "moonshot"
     assert os.environ["SMTP_HOST"] == "smtp.gmail.com"
 
 
@@ -159,11 +159,11 @@ def test_sync_does_not_touch_environ_for_missing_rows(db_session, monkeypatch) -
     Clearing stale env vars is the responsibility of the API update handlers
     via ``_sync_runtime_env``; the startup sync is additive only.
     """
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "pre-existing")
+    monkeypatch.setenv("LLM_PROVIDER", "pre-existing")
     # DB has no rows for 'llm'.
     store.sync_db_settings_to_runtime_env()
     # Pre-existing env var is untouched (sync is additive, not destructive).
-    assert os.environ["LANGCHAIN_PROVIDER"] == "pre-existing"
+    assert os.environ["LLM_PROVIDER"] == "pre-existing"
 
 
 # --------------------------------------------------------------------------- #
@@ -178,9 +178,9 @@ def test_inert_mode_reads_from_os_environ(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(base_module, "_engine", None)
     monkeypatch.setattr(base_module, "_SessionFactory", None)
 
-    monkeypatch.setenv("LANGCHAIN_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     result = store.get_settings("llm")
-    assert result.get("LANGCHAIN_PROVIDER") == "gemini"
+    assert result.get("LLM_PROVIDER") == "gemini"
 
 
 def test_inert_mode_upsert_is_noop(monkeypatch, tmp_path) -> None:
@@ -191,4 +191,4 @@ def test_inert_mode_upsert_is_noop(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(base_module, "_SessionFactory", None)
 
     # Should not raise; persistence is skipped in inert mode.
-    store.upsert_settings("llm", {"LANGCHAIN_PROVIDER": "openai"})
+    store.upsert_settings("llm", {"LLM_PROVIDER": "openai"})

@@ -353,12 +353,19 @@ export interface DataSourceSettings {
   baostock_supported: boolean;
   baostock_installed: boolean;
   baostock_message: string;
+  ccxt_exchange: string;
+  futu_host: string;
+  futu_port: number;
+  futu_configured: boolean;
   stored_in: string;
 }
 
 export interface UpdateDataSourceSettingsRequest {
   tushare_token?: string;
   clear_tushare_token?: boolean;
+  ccxt_exchange?: string;
+  futu_host?: string;
+  futu_port?: number;
 }
 
 export interface EmailSettings {

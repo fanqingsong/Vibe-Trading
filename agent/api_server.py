@@ -195,14 +195,28 @@ class DataSourceSettingsResponse(BaseModel):
     baostock_supported: bool
     baostock_installed: bool
     baostock_message: str
+    # Crypto fallback exchange for CCXT (default: binance).
+    ccxt_exchange: str
+    # Futu OpenAPI daemon endpoint (optional, HK/A-share data).
+    futu_host: str
+    futu_port: int
+    futu_configured: bool
     stored_in: str
 
 
 class UpdateDataSourceSettingsRequest(BaseModel):
-    """Update system data source credentials."""
+    """Update system data source credentials.
+
+    Each non-secret field uses a plain nullable value: ``None`` keeps the
+    existing on-disk value, an empty string clears it, and a non-empty string
+    sets it. ``tushare_token`` is the only secret and adds a ``clear_*`` tri-state.
+    """
 
     tushare_token: Optional[str] = None
     clear_tushare_token: bool = False
+    ccxt_exchange: Optional[str] = None
+    futu_host: Optional[str] = None
+    futu_port: Optional[int] = None
 
 
 class EmailSettingsResponse(BaseModel):
@@ -923,7 +937,7 @@ def _coerce_int(value: str, default: int) -> int:
 def _build_llm_settings_response(values: Optional[Dict[str, str]] = None) -> LLMSettingsResponse:
     """Build the public settings payload from dotenv values."""
     env_values = values if values is not None else _read_settings_env_values()
-    provider_name = env_values.get("LANGCHAIN_PROVIDER", "openai").strip().lower()
+    provider_name = env_values.get("LLM_PROVIDER", "openai").strip().lower()
     provider = LLM_PROVIDER_BY_NAME.get(provider_name, LLM_PROVIDER_BY_NAME["openai"])
     api_key = env_values.get(provider.api_key_env or "", "") if provider.api_key_env else ""
     api_key_configured = _is_configured_secret(api_key, LLM_API_KEY_PLACEHOLDERS)
@@ -939,16 +953,16 @@ def _build_llm_settings_response(values: Optional[Dict[str, str]] = None) -> LLM
         api_key_hint = None
     return LLMSettingsResponse(
         provider=provider.name,
-        model_name=env_values.get("LANGCHAIN_MODEL_NAME", provider.default_model),
+        model_name=env_values.get("LLM_MODEL_NAME", provider.default_model),
         base_url=env_values.get(provider.base_url_env, provider.default_base_url),
         api_key_env=provider.api_key_env,
         api_key_configured=api_key_configured,
         api_key_hint=api_key_hint,
         api_key_required=provider.api_key_required,
-        temperature=_coerce_float(env_values.get("LANGCHAIN_TEMPERATURE", "0.0"), 0.0),
+        temperature=_coerce_float(env_values.get("LLM_TEMPERATURE", "0.0"), 0.0),
         timeout_seconds=_coerce_int(env_values.get("TIMEOUT_SECONDS", "120"), 120),
         max_retries=_coerce_int(env_values.get("MAX_RETRIES", "2"), 2),
-        reasoning_effort=env_values.get("LANGCHAIN_REASONING_EFFORT", "").strip().lower(),
+        reasoning_effort=env_values.get("LLM_REASONING_EFFORT", "").strip().lower(),
         sse_timeout_seconds=_coerce_int(env_values.get("VIBE_TRADING_SSE_TIMEOUT", "90"), 90),
         stored_in="database",
         providers=LLM_PROVIDERS,
@@ -981,12 +995,20 @@ def _build_data_source_settings_response(values: Optional[Dict[str, str]] = None
         baostock_message = "BaoStock package is installed, but this project has no BaoStock loader."
     else:
         baostock_message = "No BaoStock loader is registered in this project."
+    ccxt_exchange = (env_values.get("CCXT_EXCHANGE") or "binance").strip() or "binance"
+    futu_host = (env_values.get("FUTU_HOST") or "").strip()
+    futu_port = _coerce_int((env_values.get("FUTU_PORT") or "").strip(), 0)
+    futu_configured = bool(futu_host) and futu_port > 0
     return DataSourceSettingsResponse(
         tushare_token_configured=token_configured,
         tushare_token_hint=None,
         baostock_supported=supported,
         baostock_installed=installed,
         baostock_message=baostock_message,
+        ccxt_exchange=ccxt_exchange,
+        futu_host=futu_host,
+        futu_port=futu_port,
+        futu_configured=futu_configured,
         stored_in="database",
     )
 
@@ -1032,6 +1054,22 @@ def _build_email_settings_response(values: Optional[Dict[str, str]] = None) -> E
 def _env_truthy(value: Optional[str]) -> bool:
     """Return True for common truthy env values (1/true/yes/on)."""
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sync_data_source_runtime_env(updates: Dict[str, str]) -> None:
+    """Apply saved data-source settings to the running API process env.
+
+    Mirrors :func:`_sync_email_runtime_env`: the dotenv/DB is the source of
+    truth, but the live process needs matching env vars so loaders
+    (``tushare``, ``ccxt_loader``, ``futu``) pick them up without a restart.
+    """
+    for key in ("TUSHARE_TOKEN", "CCXT_EXCHANGE", "FUTU_HOST", "FUTU_PORT"):
+        if key in updates:
+            value = updates[key]
+            if value:
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
 
 
 def _sync_email_runtime_env(updates: Dict[str, str]) -> None:
@@ -1489,15 +1527,15 @@ async def update_llm_settings(payload: UpdateLLMSettingsRequest):
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     updates: Dict[str, str] = {
-        "LANGCHAIN_PROVIDER": provider.name,
-        "LANGCHAIN_MODEL_NAME": model_name,
+        "LLM_PROVIDER": provider.name,
+        "LLM_MODEL_NAME": model_name,
         provider.base_url_env: base_url,
-        "LANGCHAIN_TEMPERATURE": str(payload.temperature),
+        "LLM_TEMPERATURE": str(payload.temperature),
         "TIMEOUT_SECONDS": str(payload.timeout_seconds),
         "MAX_RETRIES": str(payload.max_retries),
     }
-    if reasoning_effort or "LANGCHAIN_REASONING_EFFORT" in current_values:
-        updates["LANGCHAIN_REASONING_EFFORT"] = reasoning_effort
+    if reasoning_effort or "LLM_REASONING_EFFORT" in current_values:
+        updates["LLM_REASONING_EFFORT"] = reasoning_effort
 
     if provider.api_key_env:
         if payload.clear_api_key:
@@ -1547,13 +1585,21 @@ async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
     elif "TUSHARE_TOKEN" in current_values:
         updates["TUSHARE_TOKEN"] = current_values["TUSHARE_TOKEN"]
 
+    # CCXT crypto fallback exchange — plain string, None keeps current value.
+    if payload.ccxt_exchange is not None:
+        updates["CCXT_EXCHANGE"] = payload.ccxt_exchange.strip()
+
+    # Futu OpenAPI daemon endpoint. Port 0 / empty host clears the pair so the
+    # loader reports unavailable; None keeps whatever is on disk.
+    if payload.futu_host is not None or payload.futu_port is not None:
+        host = (payload.futu_host if payload.futu_host is not None else current_values.get("FUTU_HOST", "")).strip()
+        port = payload.futu_port if payload.futu_port is not None else _coerce_int(current_values.get("FUTU_PORT", ""), 0)
+        updates["FUTU_HOST"] = host
+        updates["FUTU_PORT"] = str(port) if port > 0 else ""
+
     if updates:
         upsert_settings(CATEGORY_DATA_SOURCE, updates, secret_keys=DSSecretKeys.get(CATEGORY_DATA_SOURCE, frozenset()))
-        token = updates.get("TUSHARE_TOKEN", "").strip()
-        if _is_configured_secret(token, TUSHARE_TOKEN_PLACEHOLDERS):
-            os.environ["TUSHARE_TOKEN"] = token
-        else:
-            os.environ.pop("TUSHARE_TOKEN", None)
+        _sync_data_source_runtime_env(updates)
 
     return _build_data_source_settings_response()
 

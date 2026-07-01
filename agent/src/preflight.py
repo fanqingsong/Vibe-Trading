@@ -32,14 +32,14 @@ def _check_llm_provider() -> CheckResult:
     from src.providers.llm import _ensure_dotenv, _sync_provider_env, provider_diagnostics
 
     _ensure_dotenv()
-    provider = os.getenv("LANGCHAIN_PROVIDER", "").strip()
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "").strip()
+    provider = os.getenv("LLM_PROVIDER", "").strip()
+    model = os.getenv("LLM_MODEL_NAME", "").strip()
 
     if not provider:
         return CheckResult(
             name="LLM Provider",
             status="not_configured",
-            message="LANGCHAIN_PROVIDER not set in .env",
+            message="LLM_PROVIDER not set in .env",
             impact="agent cannot function",
             critical=True,
         )
@@ -47,7 +47,7 @@ def _check_llm_provider() -> CheckResult:
         return CheckResult(
             name=f"LLM ({provider})",
             status="not_configured",
-            message="LANGCHAIN_MODEL_NAME not set in .env",
+            message="LLM_MODEL_NAME not set in .env",
             impact="agent cannot function",
             critical=True,
         )

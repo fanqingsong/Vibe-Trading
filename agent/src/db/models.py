@@ -172,7 +172,7 @@ class Setting(Base):
     """Global application setting stored as key-value pairs grouped by category.
 
     Categories: 'llm', 'data_source', 'email'. Within a category, each row is
-    one configuration key (e.g. LANGCHAIN_PROVIDER, SMTP_HOST). Secret values
+    one configuration key (e.g. LLM_PROVIDER, SMTP_HOST). Secret values
     (API keys, passwords) are stored in plaintext — the DB itself is the trust
     boundary, mirroring how they previously lived in agent/.env.
 

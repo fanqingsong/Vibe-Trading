@@ -50,8 +50,8 @@ def cmd_model(ctx: Any = None, *args: str) -> int:  # noqa: ARG001 — ctx unuse
 
         _show_settings()
     except Exception as exc:  # noqa: BLE001 — legacy may be absent on partial install
-        provider = os.getenv("LANGCHAIN_PROVIDER", "(not set)")
-        model = os.getenv("LANGCHAIN_MODEL_NAME", "(not set)")
+        provider = os.getenv("LLM_PROVIDER", "(not set)")
+        model = os.getenv("LLM_MODEL_NAME", "(not set)")
         console.print(Text(f"Provider: {provider}", style="bold"))
         console.print(Text(f"Model:    {model}", style="bold"))
         console.print(Text(f"(legacy _show_settings unavailable: {exc})", style="dim"))

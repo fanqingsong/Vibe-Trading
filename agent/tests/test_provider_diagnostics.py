@@ -16,8 +16,8 @@ def test_provider_diagnostics_redacts_secrets_and_proxy_values() -> None:
 
     llm_mod._dotenv_loaded = True
     env = {
-        "LANGCHAIN_PROVIDER": "deepseek",
-        "LANGCHAIN_MODEL_NAME": "deepseek-v4-pro",
+        "LLM_PROVIDER": "deepseek",
+        "LLM_MODEL_NAME": "deepseek-v4-pro",
         "DEEPSEEK_API_KEY": "sk-super-secret",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1?token=secret",
         "HTTPS_PROXY": "http://user:pass@proxy.local:8888",
@@ -67,7 +67,7 @@ def test_provider_capabilities_are_provider_specific() -> None:
 
 
 def test_reasoning_effort_extra_body_is_openrouter_only() -> None:
-    """LANGCHAIN_REASONING_EFFORT should not leak into official DeepSeek payloads."""
+    """LLM_REASONING_EFFORT should not leak into official DeepSeek payloads."""
     import src.providers.llm as llm_mod
 
     llm_mod._dotenv_loaded = True
@@ -78,11 +78,11 @@ def test_reasoning_effort_extra_body_is_openrouter_only() -> None:
             captured.update(kwargs)
 
     env = {
-        "LANGCHAIN_PROVIDER": "deepseek",
+        "LLM_PROVIDER": "deepseek",
         "DEEPSEEK_API_KEY": "ds-test",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
-        "LANGCHAIN_MODEL_NAME": "deepseek-v4-pro",
-        "LANGCHAIN_REASONING_EFFORT": "high",
+        "LLM_MODEL_NAME": "deepseek-v4-pro",
+        "LLM_REASONING_EFFORT": "high",
         "VIBE_TRADING_DEEPSEEK_ADAPTER": "openai-compatible",
     }
     with patch.dict(os.environ, env, clear=True):
@@ -104,10 +104,10 @@ def test_kimi_user_agent_header_is_moonshot_only() -> None:
             captured.update(kwargs)
 
     env = {
-        "LANGCHAIN_PROVIDER": "moonshot",
+        "LLM_PROVIDER": "moonshot",
         "MOONSHOT_API_KEY": "mk-test",
         "MOONSHOT_BASE_URL": "https://api.moonshot.ai/v1",
-        "LANGCHAIN_MODEL_NAME": "kimi-k2.6",
+        "LLM_MODEL_NAME": "kimi-k2.6",
     }
     with patch.dict(os.environ, env, clear=True):
         with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
@@ -117,10 +117,10 @@ def test_kimi_user_agent_header_is_moonshot_only() -> None:
 
     captured.clear()
     env = {
-        "LANGCHAIN_PROVIDER": "openai",
+        "LLM_PROVIDER": "openai",
         "OPENAI_API_KEY": "sk-test",
         "OPENAI_BASE_URL": "https://api.openai.com/v1",
-        "LANGCHAIN_MODEL_NAME": "gpt-4",
+        "LLM_MODEL_NAME": "gpt-4",
     }
     with patch.dict(os.environ, env, clear=True):
         with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
@@ -147,10 +147,10 @@ def test_deepseek_native_adapter_is_used_when_available(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "langchain_deepseek", SimpleNamespace(ChatDeepSeek=object))
     env = {
-        "LANGCHAIN_PROVIDER": "deepseek",
+        "LLM_PROVIDER": "deepseek",
         "DEEPSEEK_API_KEY": "ds-test",
         "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
-        "LANGCHAIN_MODEL_NAME": "deepseek-v4-pro",
+        "LLM_MODEL_NAME": "deepseek-v4-pro",
     }
 
     with patch.dict(os.environ, env, clear=True):

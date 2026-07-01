@@ -631,8 +631,8 @@ class AgentLoop:
                             {
                                 "type": "empty_model_response",
                                 "iter": current_iter,
-                                "provider": os.getenv("LANGCHAIN_PROVIDER", "openai"),
-                                "model": getattr(self.llm, "model_name", None) or os.getenv("LANGCHAIN_MODEL_NAME", ""),
+                                "provider": os.getenv("LLM_PROVIDER", "openai"),
+                                "model": getattr(self.llm, "model_name", None) or os.getenv("LLM_MODEL_NAME", ""),
                             }
                         )
                         break
@@ -772,8 +772,8 @@ class AgentLoop:
             state_store.mark_success(run_dir)
             final_status = "success"
         elif empty_model_response_iter is not None:
-            provider = os.getenv("LANGCHAIN_PROVIDER", "openai").strip().lower() or "openai"
-            model = getattr(self.llm, "model_name", None) or os.getenv("LANGCHAIN_MODEL_NAME", "").strip() or "(unset)"
+            provider = os.getenv("LLM_PROVIDER", "openai").strip().lower() or "openai"
+            model = getattr(self.llm, "model_name", None) or os.getenv("LLM_MODEL_NAME", "").strip() or "(unset)"
             final_reason = (
                 "empty_model_response: "
                 f"provider={provider} model={model} iteration {empty_model_response_iter} "

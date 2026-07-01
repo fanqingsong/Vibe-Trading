@@ -400,7 +400,7 @@ class NativeLLM:
         self.max_retries = max_retries if max_retries is not None else 2
         self.base_url = base_url or ""
         self.api_key = api_key or ""
-        self._vibe_provider = vibe_provider or os.getenv("LANGCHAIN_PROVIDER", "openai").lower()
+        self._vibe_provider = vibe_provider or os.getenv("LLM_PROVIDER", "openai").lower()
         self._extra_body = extra_body
         self._default_headers = dict(default_headers) if default_headers else None
         self._tools: list[dict[str, Any]] = []
@@ -737,8 +737,8 @@ def _ensure_dotenv() -> None:
     logger.info(
         "dotenv resolved from %s | provider=%s model=%s base=%s",
         _redact_env_source(loaded),
-        os.getenv("LANGCHAIN_PROVIDER", "(unset)"),
-        os.getenv("LANGCHAIN_MODEL_NAME", "(unset)"),
+        os.getenv("LLM_PROVIDER", "(unset)"),
+        os.getenv("LLM_MODEL_NAME", "(unset)"),
         _redact_base_url_for_log(os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")),
     )
 
@@ -755,7 +755,7 @@ def _normalize_ollama_base_url(base_url: str) -> str:
 def _sync_provider_env() -> None:
     """Map provider-specific env vars to OPENAI_* for the OpenAI SDK client."""
     _ensure_dotenv()
-    provider = os.getenv("LANGCHAIN_PROVIDER", "openai").lower()
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
 
     if provider in {"openai-codex", "openai_codex"}:
         codex_url = os.getenv("OPENAI_CODEX_BASE_URL", "https://chatgpt.com/backend-api/codex/responses")
@@ -764,7 +764,7 @@ def _sync_provider_env() -> None:
         os.environ.pop("OPENAI_API_KEY", None)
         return
 
-    key_env, base_env = provider_env_names(provider, os.getenv("LANGCHAIN_MODEL_NAME", ""))
+    key_env, base_env = provider_env_names(provider, os.getenv("LLM_MODEL_NAME", ""))
 
     if key_env is not None:
         api_key = os.getenv(key_env, "") or os.getenv("OPENAI_API_KEY", "")
@@ -784,8 +784,8 @@ def _sync_provider_env() -> None:
 
 def provider_diagnostics() -> dict[str, Any]:
     _sync_provider_env()
-    provider = os.getenv("LANGCHAIN_PROVIDER", "openai").strip().lower()
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "").strip()
+    provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    model = os.getenv("LLM_MODEL_NAME", "").strip()
     caps = get_provider_capabilities(provider, model)
     key_env, base_env = provider_env_names(provider, model)
     base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")
@@ -810,8 +810,8 @@ def provider_diagnostics() -> dict[str, Any]:
         "base_url": _redact_base_url_for_log(base_url),
         "api_key": {key_env: _redact_env_flag(key_env)} if key_env else {},
         "env": {
-            "LANGCHAIN_PROVIDER": _redact_env_flag("LANGCHAIN_PROVIDER"),
-            "LANGCHAIN_MODEL_NAME": _redact_env_flag("LANGCHAIN_MODEL_NAME"),
+            "LLM_PROVIDER": _redact_env_flag("LLM_PROVIDER"),
+            "LLM_MODEL_NAME": _redact_env_flag("LLM_MODEL_NAME"),
             "OPENAI_API_KEY": _redact_env_flag("OPENAI_API_KEY"),
             "OPENAI_BASE_URL": _redact_base_url_for_log(os.getenv("OPENAI_BASE_URL")),
             "OPENAI_API_BASE": _redact_base_url_for_log(os.getenv("OPENAI_API_BASE")),
@@ -824,7 +824,7 @@ def provider_diagnostics() -> dict[str, Any]:
         "packages": {name: _package_version(name) for name in package_names},
         "timeout_seconds": int(os.getenv("TIMEOUT_SECONDS", "120")),
         "max_retries": int(os.getenv("MAX_RETRIES", "2")),
-        "reasoning_effort": os.getenv("LANGCHAIN_REASONING_EFFORT", "").strip().lower(),
+        "reasoning_effort": os.getenv("LLM_REASONING_EFFORT", "").strip().lower(),
         "adapter": {
             "type": adapter_type,
             "mode": adapter_mode,
@@ -884,27 +884,27 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
     """Construct a NativeLLM (or OpenAICodexLLM) instance.
 
     Args:
-        model_name: Model name; defaults to LANGCHAIN_MODEL_NAME.
+        model_name: Model name; defaults to LLM_MODEL_NAME.
         callbacks: Kept for backward-compat; ignored by NativeLLM.
 
     Returns:
         A NativeLLM instance (or OpenAICodexLLM for the codex provider).
 
     Raises:
-        RuntimeError: If the openai SDK is missing or LANGCHAIN_MODEL_NAME is unset.
+        RuntimeError: If the openai SDK is missing or LLM_MODEL_NAME is unset.
     """
     _sync_provider_env()
-    name = model_name or os.getenv("LANGCHAIN_MODEL_NAME", "").strip()
+    name = model_name or os.getenv("LLM_MODEL_NAME", "").strip()
     if not name:
-        raise RuntimeError("LANGCHAIN_MODEL_NAME is not set")
-    temperature = float(os.getenv("LANGCHAIN_TEMPERATURE", "0.0"))
-    provider = os.getenv("LANGCHAIN_PROVIDER", "openai").lower()
+        raise RuntimeError("LLM_MODEL_NAME is not set")
+    temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
     caps = get_provider_capabilities(provider, name)
 
     if provider in {"openai-codex", "openai_codex"}:
         from src.providers.openai_codex import OpenAICodexLLM
 
-        effort = os.getenv("LANGCHAIN_REASONING_EFFORT", "").strip().lower()
+        effort = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
         return OpenAICodexLLM(
             model=name,
             temperature=temperature,
@@ -939,7 +939,7 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
         logger.info("Forcing temperature=1.0 for %s (provider requirement)", name)
         temperature = 1.0
     # Optional reasoning activation for relays requiring opt-in (e.g. OpenRouter).
-    effort = os.getenv("LANGCHAIN_REASONING_EFFORT", "").strip().lower()
+    effort = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
     extra_body = {"reasoning": {"effort": effort}} if effort and caps.openrouter_reasoning_body else None
 
     key_env, base_env = provider_env_names(provider, name)

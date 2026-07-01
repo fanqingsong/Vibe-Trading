@@ -44,6 +44,9 @@ export function Settings() {
   const [clearApiKey, setClearApiKey] = useState(false);
   const [tushareToken, setTushareToken] = useState("");
   const [clearTushareToken, setClearTushareToken] = useState(false);
+  const [ccxtExchange, setCcxtExchange] = useState("binance");
+  const [futuHost, setFutuHost] = useState("");
+  const [futuPort, setFutuPort] = useState("11111");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dataSaving, setDataSaving] = useState(false);
@@ -71,6 +74,9 @@ export function Settings() {
         setForm(toForm(llmData));
         setDataSettings(dataSourceData);
         setEmailSettings(emailData);
+        setCcxtExchange(dataSourceData.ccxt_exchange || "binance");
+        setFutuHost(dataSourceData.futu_host || "");
+        setFutuPort(dataSourceData.futu_port ? String(dataSourceData.futu_port) : "11111");
         setSmtpHost(emailData.host);
         setSmtpPort(String(emailData.port || 465));
         setSmtpUser(emailData.user);
@@ -160,10 +166,16 @@ export function Settings() {
       const updated = await api.updateDataSourceSettings({
         tushare_token: tushareToken.trim() || undefined,
         clear_tushare_token: clearTushareToken,
+        ccxt_exchange: ccxtExchange.trim() || undefined,
+        futu_host: futuHost.trim(),
+        futu_port: Number(futuPort) || 0,
       });
       setDataSettings(updated);
       setTushareToken("");
       setClearTushareToken(false);
+      setCcxtExchange(updated.ccxt_exchange || "binance");
+      setFutuHost(updated.futu_host || "");
+      setFutuPort(updated.futu_port ? String(updated.futu_port) : "11111");
       toast.success("Data source settings saved");
     } catch (error) {
       toast.error(`Failed to save data source settings: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -545,6 +557,46 @@ export function Settings() {
               </div>
             </label>
 
+            <div className="my-1 border-t pt-4" />
+
+            <label className="grid gap-2">
+              <span className={labelClass}>{"Crypto fallback exchange (CCXT)"}</span>
+              <input
+                value={ccxtExchange}
+                onChange={(event) => setCcxtExchange(event.target.value)}
+                className={fieldClass}
+                placeholder={"binance"}
+              />
+              <span className={hintClass}>
+                {"CCXT exchange id used when OKX is unreachable. Common values: binance, okx, bybit, gate, kraken. Public market data only — no API key required."}
+              </span>
+            </label>
+
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,0.6fr)]">
+              <label className="grid gap-2">
+                <span className={labelClass}>{"Futu OpenD host"}</span>
+                <input
+                  value={futuHost}
+                  onChange={(event) => setFutuHost(event.target.value)}
+                  className={fieldClass}
+                  placeholder={"127.0.0.1 (leave empty to disable)"}
+                />
+                <span className={hintClass}>{"FutuOpenD must be running locally for HK / A-share data."}</span>
+              </label>
+              <label className="grid gap-2">
+                <span className={labelClass}>{"Port"}</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={futuPort}
+                  onChange={(event) => setFutuPort(event.target.value)}
+                  className={fieldClass}
+                  placeholder={"11111"}
+                />
+              </label>
+            </div>
+
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{"Stored in"}: </span>
               <span className="break-all font-mono">{dataSettings.stored_in}</span>
@@ -574,6 +626,23 @@ export function Settings() {
                   ? "Python package installed"
                   : "Python package not installed"}
               </p>
+            </div>
+          </div>
+
+          <div className="rounded-md border bg-muted/20 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <span className="text-sm font-medium">{"Futu OpenAPI"}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs ${dataSettings.futu_configured ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>
+                {dataSettings.futu_configured ? "Endpoint set" : "Not configured"}
+              </span>
+            </div>
+            <div className="space-y-1 text-sm text-muted-foreground">
+              <p>
+                {dataSettings.futu_configured
+                  ? `${dataSettings.futu_host}:${dataSettings.futu_port}`
+                  : "No endpoint configured."}
+              </p>
+              <p>{"Requires FutuOpenD running. Download from futunn.com/openAPI."}</p>
             </div>
           </div>
         </div>

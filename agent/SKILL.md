@@ -13,7 +13,7 @@ env:
   - name: OPENAI_API_KEY
     description: "OpenAI-compatible API key — only needed for run_swarm (multi-agent teams). All other tools work without it."
     required: false
-  - name: LANGCHAIN_MODEL_NAME
+  - name: LLM_MODEL_NAME
     description: "LLM model name for run_swarm (e.g. deepseek/deepseek-v4-pro). Only needed if using run_swarm."
     required: false
 mcp:
@@ -59,7 +59,7 @@ Core research MCP tools work with zero API keys for HK/US/crypto. After `pip ins
 |---------|-----------|------|
 | HK/US equities & crypto | None | Always free (yfinance + OKX) |
 | China A-share data | `TUSHARE_TOKEN` | Only if you query A-share symbols |
-| Multi-agent swarm (`run_swarm`) | `OPENAI_API_KEY` + `LANGCHAIN_MODEL_NAME` | Swarm spawns internal LLM workers |
+| Multi-agent swarm (`run_swarm`) | `OPENAI_API_KEY` + `LLM_MODEL_NAME` | Swarm spawns internal LLM workers |
 
 ## What You Can Do
 
