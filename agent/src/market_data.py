@@ -37,6 +37,137 @@ def get_loader(source: str):
     return get_loader_cls_with_fallback(source)
 
 
+def _fetch_with_fallback(
+    *,
+    source: str,
+    codes: list[str],
+    start_date: str,
+    end_date: str,
+    interval: str,
+    loader_resolver: Callable[[str], type],
+) -> dict[str, Any]:
+    """Fetch via *source*, walking the market fallback chain for any codes
+    that come back empty (e.g. a token that passes ``is_available()`` but
+    lacks per-interface permissions, a transient API error, or a symbol the
+    primary source simply has no data for).
+
+    Returns a mapping of resolved ``{symbol: records_list}`` — *not* capped,
+    *not* JSON-safe'd; the caller post-processes the result. Unresolved codes
+    are simply absent from the dict so the caller can detect them.
+    """
+    from backtest.loaders.registry import FALLBACK_CHAINS, LOADER_REGISTRY
+
+    resolved: dict[str, Any] = {}
+    pending = list(codes)
+    tried_sources: set[str] = {source}
+
+    # Primary attempt.
+    pending = _try_fetch(
+        loader_cls=loader_resolver(source),
+        codes=pending,
+        start_date=start_date,
+        end_date=end_date,
+        interval=interval,
+        out=resolved,
+    )
+    if not pending:
+        return resolved
+
+    # Fallback: walk each market the primary loader advertises and try the
+    # next available source for unresolved codes. This catches the case where
+    # the loader constructed fine (is_available()=True) but fetch() returned
+    # empty due to permission/rate-limit/transient errors.
+    #
+    # We can't use registry.resolve_loader() here because it returns the first
+    # is_available() source — which is often the source that just failed at
+    # fetch() time (e.g. Tushare token is present but lacks permissions).
+    # Instead we walk FALLBACK_CHAINS ourselves, skipping anything already tried.
+    loader_cls = loader_resolver(source)
+    markets = getattr(loader_cls, "markets", set()) or set()
+    # Prefer specific equity markets before broad ones (mirrors the priority
+    # in registry.get_loader_cls_with_fallback).
+    _market_priority = {"a_share": 0, "us_equity": 0, "hk_equity": 0, "crypto": 0}
+    for market in sorted(markets, key=lambda m: _market_priority.get(m, 9)):
+        if not pending:
+            break
+        for name in FALLBACK_CHAINS.get(market, []):
+            if not pending:
+                break
+            if name in tried_sources or name not in LOADER_REGISTRY:
+                continue
+            fallback_cls = LOADER_REGISTRY[name]
+            # Skip loaders that can't construct or report unavailable; the
+            # fetch-time failure we're recovering from is NOT visible here.
+            try:
+                probe = fallback_cls()
+            except Exception:
+                continue
+            if not probe.is_available():
+                continue
+            tried_sources.add(name)
+            pending = _try_fetch(
+                loader_cls=fallback_cls,
+                codes=pending,
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval,
+                out=resolved,
+                log_as=name,
+            )
+
+    return resolved
+
+
+def _try_fetch(
+    *,
+    loader_cls: type,
+    codes: list[str],
+    start_date: str,
+    end_date: str,
+    interval: str,
+    out: dict[str, Any],
+    log_as: str | None = None,
+) -> list[str]:
+    """Run one loader's ``fetch`` for *codes*, merge dataframes into *out*
+    (keyed by symbol), and return the still-unresolved codes.
+
+    A fetch that raises or returns no data for a code is non-fatal: the code
+    stays in the returned pending list so the caller can try a fallback.
+    """
+    label = log_as or getattr(loader_cls, "name", "loader")
+    try:
+        loader = loader_cls()
+    except Exception:
+        logger.debug("loader %s failed to construct", label, exc_info=True)
+        return list(codes)
+    try:
+        data_map = loader.fetch(codes, start_date, end_date, interval=interval)
+    except Exception:
+        # ERROR level (not warning) so operators notice flaky/broken loaders
+        # even when a fallback later saves the request — matches the contract
+        # enforced by test_swallowed_loader_exception_is_logged.
+        logger.exception(
+            "market-data loader %r failed for %s; trying fallback",
+            label, codes,
+        )
+        return list(codes)
+    if not data_map:
+        return list(codes)
+    still_missing: list[str] = []
+    for code in codes:
+        df = data_map.get(code)
+        if df is None or getattr(df, "empty", True):
+            still_missing.append(code)
+        else:
+            out[code] = df
+    if still_missing:
+        logger.info(
+            "market-data loader %r resolved %d/%d codes; %d unresolved -> fallback",
+            label, len(codes) - len(still_missing), len(codes), len(still_missing),
+        )
+    return still_missing
+
+
 def cap_rows(records: list, max_rows: int) -> list | dict[str, object]:
     """Bound a per-symbol row list to keep tool payloads within budget."""
     n = len(records)
@@ -90,17 +221,14 @@ def fetch_market_data(
         groups = {source: list(codes)}
 
     for src, src_codes in groups.items():
-        loader_cls = loader_resolver(src)
-        loader = loader_cls()
-        try:
-            data_map = loader.fetch(src_codes, start_date, end_date, interval=interval)
-        except Exception:
-            logger.exception(
-                "market-data loader %r failed for %s; codes fall through to _unresolved",
-                src,
-                src_codes,
-            )
-            data_map = {}
+        data_map = _fetch_with_fallback(
+            source=src,
+            codes=src_codes,
+            start_date=start_date,
+            end_date=end_date,
+            interval=interval,
+            loader_resolver=loader_resolver,
+        )
         for symbol, df in data_map.items():
             records = df.reset_index().to_dict(orient="records")
             for row in records:
