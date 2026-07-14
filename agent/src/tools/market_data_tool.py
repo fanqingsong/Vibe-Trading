@@ -12,6 +12,9 @@ class MarketDataTool(BaseTool):
     """Fetch normalized OHLCV data through repository loaders."""
 
     name = "get_market_data"
+    # Different codes/date ranges are distinct fetches; blocking re-entry after
+    # the first success caused tool_skipped and false "missing July data" answers.
+    repeatable = True
     description = (
         "Fetch normalized OHLCV market data through the repository loader layer. "
         "Use this for stock, ETF, index, or crypto price bars before writing raw "

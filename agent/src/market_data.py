@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ROWS = 250
 
+# AgentLoop truncates tool results at TOOL_RESULT_LIMIT (10_000 chars) from the
+# *front*. Pretty-printed OHLCV JSON for a multi-month range exceeds that, so the
+# model only sees April–June and reports "July data missing". Stay under budget
+# by emitting compact JSON and dropping the oldest bars when needed.
+AGENT_TOOL_RESULT_CHAR_BUDGET = 9_500
+
 _SOURCE_PATTERNS = [
     (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tushare"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "yfinance"),
@@ -243,6 +249,97 @@ def fetch_market_data(
     return results
 
 
+def _symbol_bar_list(value: Any) -> list | None:
+    """Return the mutable bar list for a symbol payload, if any."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("data"), list):
+        return value["data"]
+    return None
+
+
+def fit_market_data_payload(
+    payload: dict[str, Any],
+    *,
+    max_chars: int = AGENT_TOOL_RESULT_CHAR_BUDGET,
+) -> dict[str, Any]:
+    """Shrink *payload* so its compact JSON fits within *max_chars*.
+
+    Drops the oldest bars first (keeps the most recent) — for trading questions
+    the recent window matters more than early history. Adds ``_truncated`` when
+    any bars are dropped.
+    """
+    if max_chars <= 0:
+        return payload
+
+    # Shallow-copy symbols but clone bar lists so trimming never mutates caller state.
+    fitted: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, list):
+            fitted[key] = list(value)
+        elif isinstance(value, dict) and isinstance(value.get("data"), list):
+            cloned = dict(value)
+            cloned["data"] = list(value["data"])
+            fitted[key] = cloned
+        else:
+            fitted[key] = value
+    dropped: dict[str, int] = {}
+
+    def _dump_len(obj: dict[str, Any]) -> int:
+        return len(json.dumps(obj, ensure_ascii=False, allow_nan=False))
+
+    if _dump_len(fitted) <= max_chars:
+        return fitted
+
+    # Already over budget — reserve room for the ``_truncated`` metadata we append.
+    meta_stub = {
+        "_truncated": {
+            "reason": "agent_tool_char_budget",
+            "max_chars": max_chars,
+            "policy": "kept_most_recent_bars",
+            "dropped_bars": {"X" * 16: 9999},
+            "hint": "narrow start_date/end_date or set a smaller max_rows for full detail",
+        }
+    }
+    meta_slack = _dump_len(meta_stub)
+
+    while _dump_len(fitted) + meta_slack > max_chars:
+        candidates: list[tuple[str, list]] = []
+        for key, value in fitted.items():
+            if key.startswith("_"):
+                continue
+            bars = _symbol_bar_list(value)
+            if bars and len(bars) > 1:
+                candidates.append((key, bars))
+        if not candidates:
+            break
+        key, bars = max(candidates, key=lambda item: len(item[1]))
+        bars.pop(0)
+        dropped[key] = dropped.get(key, 0) + 1
+        value = fitted[key]
+        if isinstance(value, dict) and "data" in value:
+            value["returned"] = len(bars)
+            value["char_budget_trimmed"] = True
+
+    if dropped:
+        fitted["_truncated"] = {
+            "reason": "agent_tool_char_budget",
+            "max_chars": max_chars,
+            "policy": "kept_most_recent_bars",
+            "dropped_bars": dropped,
+            "hint": "narrow start_date/end_date or set a smaller max_rows for full detail",
+        }
+    return fitted
+
+
 def fetch_market_data_json(**kwargs: Any) -> str:
-    """Fetch market data and return strict JSON."""
-    return json.dumps(fetch_market_data(**kwargs), ensure_ascii=False, indent=2, allow_nan=False)
+    """Fetch market data and return strict compact JSON under the tool budget.
+
+    Compact (no indent) so multi-month OHLCV fits the agent tool-result limit.
+    When still too large, oldest bars are dropped so recent dates (e.g. July)
+    remain visible to the model.
+    """
+    max_chars = kwargs.pop("max_chars", AGENT_TOOL_RESULT_CHAR_BUDGET)
+    payload = fetch_market_data(**kwargs)
+    fitted = fit_market_data_payload(payload, max_chars=max_chars)
+    return json.dumps(fitted, ensure_ascii=False, allow_nan=False)

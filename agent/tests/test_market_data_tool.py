@@ -9,6 +9,46 @@ from src.swarm.models import SwarmAgentSpec
 from src.swarm.presets import list_presets, load_preset
 from src.swarm.worker import build_worker_prompt
 from src.tools import build_swarm_registry
+from src.tools.market_data_tool import MarketDataTool
+
+
+def test_get_market_data_is_repeatable():
+    """Same-session re-fetches (new codes/dates) must not be tool_skipped."""
+    assert MarketDataTool.repeatable is True
+
+
+def test_long_range_keeps_recent_july_under_agent_tool_budget():
+    """AgentLoop keeps only the first 10k chars of tool results.
+
+    Pretty multi-month OHLCV used to truncate mid-series so the model never saw
+    July and answered 'July data missing'. Compact JSON + keep-recent fitting
+    must leave July bars inside that 10k window.
+    """
+    from src.market_data import AGENT_TOOL_RESULT_CHAR_BUDGET, fit_market_data_payload
+
+    idx = pd.date_range("2026-01-01", "2026-07-14", freq="B")
+    rows = [
+        {
+            "trade_date": ts.isoformat(),
+            "open": 20.0,
+            "high": 21.0,
+            "low": 19.0,
+            "close": 20.5,
+            "volume": 100000.0,
+        }
+        for ts in idx
+    ]
+    payload = {"000895.SZ": rows}
+    # Simulate old pretty dump blowing past the agent limit.
+    pretty = json.dumps(payload, ensure_ascii=False, indent=2)
+    assert len(pretty) > 10_000
+    assert "2026-07" not in pretty[:10_000]
+
+    fitted = fit_market_data_payload(payload, max_chars=AGENT_TOOL_RESULT_CHAR_BUDGET)
+    text = json.dumps(fitted, ensure_ascii=False, allow_nan=False)
+    assert len(text) <= AGENT_TOOL_RESULT_CHAR_BUDGET
+    assert "2026-07-14" in text
+    assert fitted.get("_truncated", {}).get("policy") == "kept_most_recent_bars"
 
 
 def test_market_data_json_is_strict_when_loader_returns_nan():
