@@ -1063,7 +1063,8 @@ export interface ScheduledTask {
   schedule_preset?: string | null;
   cron_expr?: string | null;
   timezone: string;
-  session_id: string;
+  /** Legacy; unused for new tasks. */
+  session_id?: string;
   enabled: boolean;
   on_overlap: OverlapPolicy;
   notify_enabled: boolean;
@@ -1071,6 +1072,10 @@ export interface ScheduledTask {
   last_run_at?: string | null;
   last_status: TaskStatusCode;
   last_error?: string | null;
+  /** Truncated agent reply from the most recent fire. */
+  last_summary?: string | null;
+  /** Agent run id from the most recent fire. */
+  last_run_id?: string | null;
   last_attempt_id?: string | null;
   run_count: number;
   created_at: string;
@@ -1085,8 +1090,6 @@ export interface ScheduledTaskCreateRequest {
   title: string;
   prompt: string;
   schedule: ScheduleSpec;
-  /** Optional existing session id; auto-created when omitted. */
-  session_id?: string;
   on_overlap?: OverlapPolicy;
   notify_enabled?: boolean;
   /** Optional comma/semicolon-separated recipient override. */
@@ -1119,6 +1122,7 @@ export interface ScheduledTaskRunResponse {
   status: string;
   result: {
     status: string;
+    run_id?: string;
     attempt_id?: string;
     reason?: string;
   };

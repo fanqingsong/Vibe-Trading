@@ -65,11 +65,6 @@ class TaskCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     prompt: str = Field(..., min_length=1)
     schedule: ScheduleSpec
-    session_id: str | None = Field(
-        None,
-        description="Optional existing session id; auto-created when omitted",
-        max_length=64,
-    )
     on_overlap: OverlapPolicy = "skip"
     notify_enabled: bool = Field(
         False, description="Email the agent's reply to the owner after each fire"
@@ -105,7 +100,7 @@ class TaskOut(BaseModel):
     schedule_preset: str | None = None
     cron_expr: str | None = None
     timezone: str
-    session_id: str
+    session_id: str = ""
     enabled: bool
     on_overlap: str
     notify_enabled: bool = False
@@ -113,6 +108,8 @@ class TaskOut(BaseModel):
     last_run_at: str | None = None
     last_status: str
     last_error: str | None = None
+    last_summary: str | None = None
+    last_run_id: str | None = None
     last_attempt_id: str | None = None
     run_count: int
     created_at: str

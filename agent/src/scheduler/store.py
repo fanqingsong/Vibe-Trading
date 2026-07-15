@@ -143,6 +143,30 @@ class ScheduledTaskStore:
         self._mem_backend().pop(task_id, None)
         return True
 
+    def recover_stale_running_tasks(
+        self, *, reason: str = "interrupted: process restarted while task was running"
+    ) -> int:
+        """Mark any ``last_status=running`` rows as failed.
+
+        Called on scheduler boot. A ``running`` row after restart means the
+        previous process was killed mid-fire (uvicorn reload / container
+        restart) and can never finish writing a terminal status.
+
+        Returns:
+            Number of rows recovered.
+        """
+        if _is_db_active():
+            return self._recover_stale_running_db(reason)
+        count = 0
+        now = _utcnow()
+        for task in self._mem_backend().values():
+            if task.last_status == "running":
+                task.last_status = "failed"
+                task.last_error = reason
+                task.last_run_at = now
+                count += 1
+        return count
+
     # ------------------------------------------------------------------ #
     # DB-backed implementations
     # ------------------------------------------------------------------ #
@@ -235,3 +259,19 @@ class ScheduledTaskStore:
             except SQLAlchemyError:
                 logger.exception("failed to delete scheduled task %s", task_id)
                 return False
+
+    def _recover_stale_running_db(self, reason: str) -> int:
+        with get_session() as session:  # type: ignore[assignment]
+            if session is None:  # pragma: no cover
+                return 0
+            rows = (
+                session.query(ScheduledTask)
+                .filter(ScheduledTask.last_status == "running")
+                .all()
+            )
+            now = _utcnow()
+            for row in rows:
+                row.last_status = "failed"
+                row.last_error = reason
+                row.last_run_at = now
+            return len(rows)

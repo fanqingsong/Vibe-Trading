@@ -138,6 +138,8 @@ def init_db() -> bool:
 _COLUMN_UPGRADES: tuple[tuple[str, str, str], ...] = (
     ("scheduled_tasks", "notify_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
     ("scheduled_tasks", "notify_emails", "VARCHAR(512)"),
+    ("scheduled_tasks", "last_summary", "TEXT"),
+    ("scheduled_tasks", "last_run_id", "VARCHAR(64)"),
 )
 
 

@@ -289,6 +289,16 @@ def seed_all_categories_if_empty(env_source: Mapping[str, str] | None = None) ->
 # --------------------------------------------------------------------------- #
 
 
+#: Legacy dotenv / DB keys from pre-rename installs. Mapped onto the current
+#: ``LLM_*`` names when the modern key is absent so old deployments keep
+#: working after the LANGCHAIN_* → LLM_* rename.
+_LEGACY_LLM_KEY_ALIASES: tuple[tuple[str, str], ...] = (
+    ("LANGCHAIN_PROVIDER", "LLM_PROVIDER"),
+    ("LANGCHAIN_MODEL_NAME", "LLM_MODEL_NAME"),
+    ("LANGCHAIN_TEMPERATURE", "LLM_TEMPERATURE"),
+)
+
+
 def sync_db_settings_to_runtime_env() -> None:
     """Load all settings from the DB into ``os.environ`` at startup.
 
@@ -296,6 +306,9 @@ def sync_db_settings_to_runtime_env() -> None:
     ``os.getenv('SMTP_HOST')`` call site keeps working unchanged — they still
     read ``os.environ``, but the source of truth is now the database. No-op in
     inert (no-DB) mode.
+
+    Also projects legacy ``LANGCHAIN_*`` rows onto ``LLM_*`` when the modern
+    key is missing (one-time rename compatibility).
     """
     if not _is_db_active():
         return
@@ -309,5 +322,9 @@ def sync_db_settings_to_runtime_env() -> None:
                     os.environ[row.key] = row.value
                 else:
                     os.environ.pop(row.key, None)
+            # Legacy alias: prefer the modern key if both are present.
+            for legacy, modern in _LEGACY_LLM_KEY_ALIASES:
+                if not os.environ.get(modern) and os.environ.get(legacy):
+                    os.environ[modern] = os.environ[legacy]
     except SQLAlchemyError:
         logger.exception("sync_db_settings_to_runtime_env failed")

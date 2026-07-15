@@ -4,8 +4,10 @@ Covers:
 - ``dispatcher._map_event`` for ``scheduler.task.completed``: recipient
   resolution (per-task override → owner email → global), subject/kind for
   success vs failure, content truncation, and the ``notify_reports`` toggle.
-- ``ScheduledTaskStore.get_task_by_session_id`` against the in-memory backend.
-- ``SessionService._maybe_notify_scheduled_task`` gating on ``notify_enabled``.
+- ``ScheduledTaskStore.get_task_by_session_id`` against the in-memory backend
+  (legacy lookup; notify dispatch now lives on PromptRunner).
+
+PromptRunner notify gating is covered in ``test_scheduler_runner.py``.
 """
 
 from __future__ import annotations
@@ -261,66 +263,3 @@ def test_store_get_task_by_session_id_inmemory_hit() -> None:
     assert store.get_task_by_session_id("nope") is None
     assert store.get_task_by_session_id("") is None
 
-
-# ----------------------- SessionService gating -----------------------
-
-
-def test_maybe_notify_skips_when_notify_disabled() -> None:
-    """A task without notify_enabled must not dispatch any email event."""
-    from src.session.service import SessionService
-
-    with mock.patch(
-        "src.scheduler.store.ScheduledTaskStore.get_task_by_session_id"
-    ) as m_get, mock.patch("src.notify.dispatcher.fire_and_forget") as m_faf:
-        m_get.return_value = SimpleNamespace(
-            id="t1", user_id="u1", session_id="s1", title="t", prompt="p",
-            notify_enabled=False, notify_emails=None,
-        )
-        svc = SessionService.__new__(SessionService)
-        svc._maybe_notify_scheduled_task(
-            "s1", attempt_id="a1", status="completed", summary="hi", error="",
-        )
-    m_faf.assert_not_called()
-
-
-def test_maybe_notify_dispatches_when_enabled() -> None:
-    """A task with notify_enabled dispatches the scheduler.task.completed event."""
-    from src.session.service import SessionService
-
-    with mock.patch(
-        "src.scheduler.store.ScheduledTaskStore.get_task_by_session_id"
-    ) as m_get, mock.patch(
-        "src.session.service.SessionService._lookup_owner_email",
-        return_value="owner@x.com",
-    ), mock.patch("src.notify.dispatcher.fire_and_forget") as m_faf:
-        m_get.return_value = SimpleNamespace(
-            id="t1", user_id="u1", session_id="s1", title="Daily", prompt="p",
-            notify_enabled=True, notify_emails="a@x.com,b@x.com",
-        )
-        svc = SessionService.__new__(SessionService)
-        svc._maybe_notify_scheduled_task(
-            "s1", attempt_id="a1", status="completed", summary="hi", error="",
-        )
-    m_faf.assert_called_once()
-    event_type, data = m_faf.call_args.args
-    assert event_type == EVENT_SCHEDULER_TASK_COMPLETED
-    assert data["title"] == "Daily"
-    assert data["summary"] == "hi"
-    assert data["owner_email"] == "owner@x.com"
-    assert data["recipients_override"] == ["a@x.com", "b@x.com"]
-
-
-def test_maybe_notify_skips_when_session_has_no_task() -> None:
-    """An ordinary chat session (no matching task) must not trigger email."""
-    from src.session.service import SessionService
-
-    with mock.patch(
-        "src.scheduler.store.ScheduledTaskStore.get_task_by_session_id",
-        return_value=None,
-    ) as m_get, mock.patch("src.notify.dispatcher.fire_and_forget") as m_faf:
-        svc = SessionService.__new__(SessionService)
-        svc._maybe_notify_scheduled_task(
-            "ordinary-session", attempt_id="a1",
-            status="completed", summary="hi", error="",
-        )
-    m_faf.assert_not_called()

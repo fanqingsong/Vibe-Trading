@@ -60,9 +60,9 @@ class User(Base):
 class ScheduledTask(Base):
     """A user-owned generic scheduled task that runs a prompt on a schedule.
 
-    The task body is a natural-language ``prompt`` handed to the agent via the
-    standard ``SessionService.send_message`` entry when the schedule fires. The
-    schedule is expressed in one of two modes (``schedule_type``):
+    The task body is a natural-language ``prompt`` executed directly by the
+    agent when the schedule fires (not via the chat Session API). The schedule
+    is expressed in one of two modes (``schedule_type``):
 
     * ``"preset"`` — a named preset from :data:`PRESET_TO_CRON` (e.g.
       ``"daily_0930"``), stored in ``schedule_preset``.
@@ -71,9 +71,8 @@ class ScheduledTask(Base):
     Both modes are projected onto an equivalent cron string for next-fire
     computation, so the scheduler only needs to understand one form.
 
-    Execution lands in a dedicated session (one per task) so the full agent
-    transcript (prompt + streamed answer + tool calls) is preserved and
-    replayable from the Web UI exactly like a manual chat turn.
+    Each fire's outcome is recorded on this row (``last_status`` /
+    ``last_summary`` / ``last_run_id``). Nothing is written to a chat Session.
 
     Attributes:
         id: Stable opaque identifier (UUID hex).
@@ -84,7 +83,8 @@ class ScheduledTask(Base):
         schedule_preset: Preset key when ``schedule_type == "preset"``.
         cron_expr: 5-field cron expression when ``schedule_type == "cron"``.
         timezone: IANA tz the schedule is interpreted in (default Asia/Shanghai).
-        session_id: Dedicated session id the prompt is sent to on each fire.
+        session_id: Legacy column; unused by new tasks (empty string). Kept so
+            existing deployments do not need a destructive migration.
         enabled: When False the task is skipped (scheduler still holds the job
             so toggling back to True is instant).
         on_overlap: Concurrency policy when the previous run is still active.
@@ -94,8 +94,9 @@ class ScheduledTask(Base):
         last_status: Terminal status of the most recent fire:
             ``idle|running|success|failed|skipped``.
         last_error: Short error string when ``last_status == "failed"``.
-        last_attempt_id: The session attempt id produced by the last fire, so
-            the UI can deep-link into the agent transcript.
+        last_summary: Truncated agent reply from the most recent fire.
+        last_run_id: Agent run id from the most recent fire (filesystem run dir).
+        last_attempt_id: Legacy alias of ``last_run_id`` (kept for older clients).
         run_count: Monotonic counter of completed fires.
         created_at / updated_at: Timestamps (UTC).
     """
@@ -114,7 +115,9 @@ class ScheduledTask(Base):
     cron_expr: Mapped[str | None] = mapped_column(String(128))
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)
 
-    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Legacy: previously bound each task to a dedicated chat session. New tasks
+    # leave this empty; the column stays non-null for older DBs/rows.
+    session_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     on_overlap: Mapped[str] = mapped_column(String(16), default="skip", nullable=False)
@@ -129,6 +132,8 @@ class ScheduledTask(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_status: Mapped[str] = mapped_column(String(16), default="idle", nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
+    last_summary: Mapped[str | None] = mapped_column(Text)
+    last_run_id: Mapped[str | None] = mapped_column(String(64))
     last_attempt_id: Mapped[str | None] = mapped_column(String(64))
     run_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
@@ -150,7 +155,7 @@ class ScheduledTask(Base):
             "schedule_preset": self.schedule_preset,
             "cron_expr": self.cron_expr,
             "timezone": self.timezone,
-            "session_id": self.session_id,
+            "session_id": self.session_id or "",
             "enabled": bool(self.enabled),
             "on_overlap": self.on_overlap,
             "notify_enabled": bool(self.notify_enabled),
@@ -158,7 +163,9 @@ class ScheduledTask(Base):
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "last_status": self.last_status,
             "last_error": self.last_error,
-            "last_attempt_id": self.last_attempt_id,
+            "last_summary": self.last_summary,
+            "last_run_id": self.last_run_id or self.last_attempt_id,
+            "last_attempt_id": self.last_attempt_id or self.last_run_id,
             "run_count": self.run_count,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

@@ -11,7 +11,6 @@ const PROXY_PATHS = [
   "/live",
   "/upload",
   "/shadow-reports",
-  "/scheduler",
 ];
 
 export default defineConfig(({ mode }) => {
@@ -49,6 +48,9 @@ export default defineConfig(({ mode }) => {
         // serves index.html and nested endpoints (llm, data-sources, email,
         // email/test, ...) are never shadowed by the SPA shell.
         "/settings": apiProxyWithHtmlFallback,
+        // Same SPA/API split as ``/settings``: bare ``/scheduler`` is the
+        // React page; ``/scheduler/tasks|presets|status|...`` are APIs.
+        "/scheduler": apiProxyWithHtmlFallback,
         "^/alpha(?:/|$)": apiProxy,
       },
     },

@@ -10,11 +10,11 @@ pattern).
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any
 
 from src.live.runtime.scheduler import Job, Scheduler
 from src.scheduler.cron import next_run_ms
-from src.scheduler.runner import PromptRunner, SessionFactory
+from src.scheduler.runner import AgentRunner, PromptRunner
 from src.scheduler.store import ScheduledTaskStore
 
 logger = logging.getLogger(__name__)
@@ -31,24 +31,23 @@ class SchedulerService:
     def __init__(
         self,
         *,
-        session_factory: SessionFactory,
         store: ScheduledTaskStore | None = None,
         scheduler: Scheduler | None = None,
+        agent_runner: AgentRunner | None = None,
     ) -> None:
         """Initialize the service.
 
         Args:
-            session_factory: ``(user_id) -> SessionService | None``. Bound by
-                the host ``api_server`` to its per-user factory; kept as a
-                callable here to avoid a circular import.
             store: Task store. Defaults to a new :class:`ScheduledTaskStore`.
             scheduler: Optional injected scheduler (tests). When ``None`` a
                 real one is constructed lazily in :meth:`start` so we bind to
                 the running event loop, not the import-time one.
+            agent_runner: Optional injected agent runner (tests). Defaults to
+                the direct :func:`~src.scheduler.executor.run_scheduled_prompt`.
         """
         self.store = store or ScheduledTaskStore()
-        self._session_factory = session_factory
         self._scheduler: Scheduler | None = scheduler
+        self._agent_runner = agent_runner
         self._runner: PromptRunner | None = None
         self._started = False
 
@@ -66,12 +65,16 @@ class SchedulerService:
             return
         if self._scheduler is None:
             self._scheduler = Scheduler(on_fire=self._on_fire_dispatch)
-        # Wire the scheduler into the runner so it can re-arm jobs.
         self._runner = PromptRunner(
             store=self.store,
-            session_factory=self._session_factory,
+            agent_runner=self._agent_runner,
             scheduler=self._scheduler,
         )
+        # Any ``running`` row survived a previous process death; it can never
+        # finish, so flip it to failed before re-arming jobs.
+        recovered = self.store.recover_stale_running_tasks()
+        if recovered:
+            logger.warning("recovered %d stale running scheduled task(s)", recovered)
         self._bootstrap_jobs()
         self._scheduler.start()
         self._started = True
@@ -197,7 +200,7 @@ class SchedulerService:
             # runner can operate standalone.
             self._runner = PromptRunner(
                 store=self.store,
-                session_factory=self._session_factory,
+                agent_runner=self._agent_runner,
                 scheduler=self._scheduler,
             )
         return await self._runner.run_task_now(task_id)

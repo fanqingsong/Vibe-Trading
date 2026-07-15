@@ -7,7 +7,7 @@ mounting pattern as :mod:`src.api.alpha_routes`.
 Routes (all auth-gated, all scoped to ``current_user.id``):
 
 - ``GET    /scheduler/tasks``                — list current user's tasks
-- ``POST   /scheduler/tasks``                — create task (+ dedicated session)
+- ``POST   /scheduler/tasks``                — create task
 - ``GET    /scheduler/tasks/{id}``           — task detail (incl. live next_run_at)
 - ``PATCH  /scheduler/tasks/{id}``           — update fields
 - ``DELETE /scheduler/tasks/{id}``           — delete (unregisters from scheduler)
@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel
 
 from src.db.models import ScheduledTask
 from src.scheduler.cron import (
@@ -96,7 +95,7 @@ def _task_to_out(task: ScheduledTask) -> TaskOut:
         schedule_preset=task.schedule_preset,
         cron_expr=task.cron_expr,
         timezone=task.timezone or "Asia/Shanghai",
-        session_id=task.session_id,
+        session_id=getattr(task, "session_id", None) or "",
         enabled=bool(task.enabled),
         on_overlap=task.on_overlap or "skip",
         notify_enabled=bool(getattr(task, "notify_enabled", False)),
@@ -104,37 +103,15 @@ def _task_to_out(task: ScheduledTask) -> TaskOut:
         last_run_at=task.last_run_at.isoformat() if task.last_run_at else None,
         last_status=task.last_status or "idle",
         last_error=task.last_error,
-        last_attempt_id=task.last_attempt_id,
+        last_summary=getattr(task, "last_summary", None),
+        last_run_id=getattr(task, "last_run_id", None) or task.last_attempt_id,
+        last_attempt_id=task.last_attempt_id or getattr(task, "last_run_id", None),
         run_count=task.run_count or 0,
         created_at=task.created_at.isoformat() if task.created_at else "",
         updated_at=task.updated_at.isoformat() if task.updated_at else "",
         next_run_at=next_run_at_iso,
         schedule_label=schedule_label,
     )
-
-
-# --------------------------------------------------------------------------- #
-# Session factory binding
-# --------------------------------------------------------------------------- #
-
-
-def _default_session_factory(user_id: str) -> Any:
-    """Resolve the per-user SessionService from the host api_server module.
-
-    Importing :mod:`api_server` directly here would create a circular import
-    (api_server imports this module at registration time), so we resolve it
-    lazily through ``sys.modules`` on first call. Bound by the host in
-    :func:`register_scheduler_routes` when available.
-    """
-    import sys
-
-    host = sys.modules.get("api_server") or sys.modules.get("agent.api_server")
-    if host is None:
-        return None
-    factory = getattr(host, "_get_session_service", None)
-    if factory is None:
-        return None
-    return factory(user_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +124,6 @@ AuthDep = Callable[..., Awaitable[Any] | Any]
 def register_scheduler_routes(
     app: FastAPI,
     require_auth: AuthDep | None = None,
-    session_factory: Callable[[str], Any] | None = None,
 ) -> None:
     """Mount the scheduler routes onto ``app`` and start the service.
 
@@ -156,9 +132,6 @@ def register_scheduler_routes(
         require_auth: Header-auth dependency for JSON endpoints. Resolved from
             ``api_server`` via ``sys.modules`` when ``None`` (mirrors the
             alpha_routes pattern).
-        session_factory: Optional ``(user_id) -> SessionService``. Defaults to
-            :func:`_default_session_factory` which resolves
-            ``api_server._get_session_service`` lazily.
     """
     global _service, _store
 
@@ -174,10 +147,7 @@ def register_scheduler_routes(
         require_auth = host.require_auth
 
     _store = ScheduledTaskStore()
-    _service = SchedulerService(
-        session_factory=session_factory or _default_session_factory,
-        store=_store,
-    )
+    _service = SchedulerService(store=_store)
 
     # ------------------------------------------------------------------- #
     # GET /scheduler/presets
@@ -230,11 +200,7 @@ def register_scheduler_routes(
     async def create_task(
         payload: TaskCreate, current_user=Depends(require_auth)
     ) -> dict[str, Any]:
-        """Create a task and register it with the live scheduler.
-
-        Auto-creates a dedicated session when ``session_id`` is omitted, so the
-        agent transcript for every fire is preserved and replayable.
-        """
+        """Create a task and register it with the live scheduler."""
         assert _store is not None and _service is not None  # noqa: S101
 
         # Validate the schedule spec eagerly so a 400 reaches the user before
@@ -243,27 +209,6 @@ def register_scheduler_routes(
             payload.schedule.resolved_cron()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-
-        # Resolve / create the dedicated session.
-        svc = _default_session_factory(current_user.id)
-        session_id = payload.session_id
-        if session_id:
-            # Verify ownership: the session must exist under this user.
-            if svc is not None:
-                existing = svc.get_session(session_id)
-                if existing is None:
-                    raise HTTPException(
-                        status_code=404, detail=f"session {session_id!r} not found"
-                    )
-        else:
-            if svc is None:
-                raise HTTPException(
-                    status_code=503,
-                    detail="session runtime is disabled; cannot create a task session",
-                )
-            title = f"Scheduled: {payload.title}"
-            session = svc.create_session(title=title)
-            session_id = session.session_id
 
         task = ScheduledTask(
             id=_new_uuid(),
@@ -274,7 +219,7 @@ def register_scheduler_routes(
             schedule_preset=payload.schedule.preset,
             cron_expr=payload.schedule.cron,
             timezone=payload.schedule.timezone,
-            session_id=session_id,
+            session_id="",
             enabled=True,
             on_overlap=payload.on_overlap,
             notify_enabled=payload.notify_enabled,
@@ -371,11 +316,6 @@ def register_scheduler_routes(
     # POST /scheduler/tasks/{id}/run  (manual trigger)
     # ------------------------------------------------------------------- #
 
-    class RunResponse(BaseModel):
-        status: str
-        attempt_id: str | None = None
-        reason: str | None = None
-
     @app.post(
         "/scheduler/tasks/{task_id}/run",
         dependencies=[Depends(require_auth)],
@@ -385,16 +325,26 @@ def register_scheduler_routes(
     ) -> dict[str, Any]:
         """Fire a task immediately, bypassing the overlap lock.
 
-        Returns the runner's outcome; the agent transcript lands in the task's
-        dedicated session and is visible via the existing session SSE.
+        Starts the agent run in the background and returns at once so the
+        HTTP worker is not held for the full (possibly long) agent loop.
+        Poll ``GET /scheduler/tasks`` for ``last_status`` / ``last_summary``.
         """
+        import asyncio
+
         assert _store is not None and _service is not None  # noqa: S101
         # Owner check — non-owners see 404.
         task = _store.get_task(task_id, current_user.id)
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
-        result = await _service.trigger_now(task_id)
-        return {"status": "ok", "result": result}
+
+        async def _bg() -> None:
+            try:
+                await _service.trigger_now(task_id)
+            except Exception:  # noqa: BLE001 — never leave an unawaited task error
+                logger.exception("background run of scheduled task %s failed", task_id)
+
+        asyncio.create_task(_bg())
+        return {"status": "ok", "result": {"status": "running", "reason": "started"}}
 
     # ------------------------------------------------------------------- #
     # POST /scheduler/tasks/{id}/toggle

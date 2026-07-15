@@ -40,7 +40,7 @@ interface SchedulerState {
   updateTask: (id: string, body: import("@/lib/api").ScheduledTaskUpdateRequest) => Promise<ScheduledTask | null>;
   deleteTask: (id: string) => Promise<boolean>;
   toggleTask: (id: string) => Promise<ScheduledTask | null>;
-  runNow: (id: string) => Promise<{ status: string; attempt_id?: string; reason?: string } | null>;
+  runNow: (id: string) => Promise<{ status: string; run_id?: string; reason?: string } | null>;
   clearError: () => void;
 }
 

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Clock,
   Plus,
@@ -97,7 +96,6 @@ interface FormState {
   cron: string;
   timezone: string;
   onOverlap: OverlapPolicy;
-  sessionId: string;
   notifyEnabled: boolean;
   notifyEmails: string;
 }
@@ -113,7 +111,6 @@ function emptyForm(): FormState {
     cron: "0 9 * * *",
     timezone: DEFAULT_TZ,
     onOverlap: "skip",
-    sessionId: "",
     notifyEnabled: false,
     notifyEmails: "",
   };
@@ -128,7 +125,6 @@ function formFromTask(t: ScheduledTask): FormState {
     cron: t.cron_expr ?? "0 9 * * *",
     timezone: t.timezone || DEFAULT_TZ,
     onOverlap: t.on_overlap,
-    sessionId: t.session_id,
     notifyEnabled: t.notify_enabled ?? false,
     notifyEmails: t.notify_emails ?? "",
   };
@@ -335,19 +331,6 @@ function TaskFormModal({
             </div>
           </div>
 
-          <div>
-            <label className={labelClass}>
-              Session {editing ? "(locked when editing)" : "(leave blank to auto-create a dedicated session)"}
-            </label>
-            <input
-              className={cn(fieldClass, "font-mono text-xs")}
-              value={form.sessionId}
-              onChange={(e) => setForm((s) => ({ ...s, sessionId: e.target.value }))}
-              placeholder="auto-create"
-              disabled={!!editing}
-            />
-          </div>
-
           <div className="rounded-md border border-border p-3 space-y-3">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -423,7 +406,6 @@ function TaskRow({
   onToggle: (t: ScheduledTask) => void;
   onRun: (t: ScheduledTask) => void;
 }) {
-  const navigate = useNavigate();
   const countdown = useCountdown(task.enabled ? task.next_run_at : null);
   const busy = false; // per-row busy state could be wired via store.runningActionId
   const disabled = !task.enabled;
@@ -513,14 +495,14 @@ function TaskRow({
         </div>
       )}
 
-      <div className="mt-2 flex items-center justify-between">
-        <button
-          onClick={() => navigate(`/agent?session=${task.session_id}`)}
-          className="text-xs text-primary hover:underline"
+      {task.last_summary && (
+        <div
+          className="mt-2 max-h-24 overflow-y-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground whitespace-pre-wrap"
+          title={task.last_summary}
         >
-          Open session transcript →
-        </button>
-      </div>
+          {task.last_summary}
+        </div>
+      )}
     </div>
   );
 }
@@ -595,7 +577,6 @@ export function Scheduler() {
       title: state.title,
       prompt: state.prompt,
       schedule,
-      session_id: state.sessionId || undefined,
       on_overlap: state.onOverlap,
       notify_enabled: state.notifyEnabled,
       notify_emails: state.notifyEmails || undefined,
@@ -623,12 +604,14 @@ export function Scheduler() {
     showToast(`Triggering "${t.title}"…`);
     const result = await store.runNow(t.id);
     if (result) {
-      if (result.status === "success" && result.attempt_id) {
-        showToast(`"${t.title}" fired — open the session to see results.`);
+      if (result.status === "success") {
+        showToast(`"${t.title}" completed.`);
+        void store.loadTasks();
       } else if (result.status === "skipped") {
         showToast(`"${t.title}" skipped: ${result.reason ?? "overlap"}`);
       } else if (result.status === "failed") {
         showToast(`"${t.title}" failed: ${result.reason ?? "unknown"}`);
+        void store.loadTasks();
       }
     }
   };
@@ -643,7 +626,7 @@ export function Scheduler() {
             Scheduled Tasks
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Describe a prompt and a schedule. Each fire runs the prompt through your agent and saves the transcript to a dedicated session.
+            Describe a prompt and a schedule. Each fire runs the prompt through your agent and records the result on the task.
           </p>
         </div>
         <button
@@ -714,7 +697,7 @@ export function Scheduler() {
           >
             <h3 className="text-base font-semibold">Delete task?</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              “{deleteTarget.title}” will be removed from the scheduler. The dedicated session and its transcript are kept.
+              “{deleteTarget.title}” will be removed from the scheduler.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
