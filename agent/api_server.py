@@ -577,7 +577,7 @@ app.add_middleware(
 # SPA deep-link fallback
 # ----------------------------------------------------------------------------
 # A handful of API routes share their path with frontend SPA routes (e.g.
-# ``/runs/{id}`` and ``/correlation``). Because FastAPI matches registered
+# ``/runs/{id}``, ``/correlation``, and ``/dividends``). Because FastAPI matches registered
 # routes before the static SPA mount, a browser that refreshes or bookmarks
 # one of these URLs would receive JSON (or 401/422) instead of the SPA shell.
 # The middleware below serves ``frontend/dist/index.html`` when the request
@@ -592,7 +592,7 @@ app.add_middleware(
 # text/html`` (e.g. a user pasting the URL into the address bar).
 
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-_SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset({"/correlation"})
+_SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset({"/correlation", "/dividends"})
 # Each regex matches a complete request path. Trailing slash optional.
 _SPA_HTML_PATH_REGEX: tuple[re.Pattern[str], ...] = (
     # ``/runs/{run_id}`` — RunDetail page. Excludes ``/runs/{id}/code``,
@@ -615,9 +615,10 @@ async def _spa_html_deep_link_fallback(request: Request, call_next):
     """Serve ``frontend/dist/index.html`` when a browser navigates directly to
     an SPA path that also exists as an API endpoint.
 
-    Conflicts: ``/runs/{id}`` (RunDetail page vs API) and ``/correlation``
-    (Correlation page vs API). Programmatic clients (``Accept: */*`` or
-    ``application/json``) still hit the real API handler.
+    Conflicts: ``/runs/{id}`` (RunDetail page vs API), ``/correlation``
+    (Correlation page vs API), and ``/dividends`` (Dividend screen page vs
+    API). Programmatic clients (``Accept: */*`` or ``application/json``)
+    still hit the real API handler.
     """
     if request.method == "GET":
         accept = request.headers.get("accept", "")
@@ -1721,6 +1722,76 @@ async def get_correlation_matrix(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Correlation computation failed: {exc}")
+
+
+@app.get("/dividends")
+async def screen_dividends(
+    universe: str = Query(
+        "csi300",
+        description="Stock universe: csi300 | sp500 | custom",
+    ),
+    codes: str | None = Query(
+        None,
+        description="Comma-separated tickers (required when universe=custom)",
+    ),
+    min_yield: float = Query(3.0, description="Minimum dividend yield in percent", ge=0, le=100),
+    max_yield: float | None = Query(
+        None,
+        description="Optional max yield percent (filters extreme yield traps)",
+        ge=0,
+        le=100,
+    ),
+    min_market_cap: float | None = Query(
+        None,
+        description="Min market cap: 亿元 for A-shares, USD absolute for US",
+        ge=0,
+    ),
+    max_pe: float | None = Query(None, description="Optional max trailing PE", ge=0),
+    top: int = Query(50, description="Max rows to return", ge=1, le=500),
+    trade_date: str | None = Query(
+        None,
+        description="Optional A-share trade date YYYYMMDD or YYYY-MM-DD",
+    ),
+):
+    """Screen equities by trailing dividend yield (high-dividend screener).
+
+    A-shares use Tushare ``daily_basic.dv_ttm``; US names use yfinance
+    ``dividendYield``. Results are ranked by yield descending.
+    """
+    from backtest.dividend_screen import screen_high_dividend
+
+    universe_key = universe.strip().lower()
+    if universe_key not in ("csi300", "sp500", "custom"):
+        raise HTTPException(
+            status_code=400,
+            detail="universe must be one of: csi300, sp500, custom",
+        )
+
+    code_list: list[str] | None = None
+    if codes:
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        if len(code_list) > 500:
+            raise HTTPException(status_code=400, detail="Maximum 500 codes per request")
+    if universe_key == "custom" and not code_list:
+        raise HTTPException(status_code=400, detail="codes required when universe=custom")
+
+    try:
+        return screen_high_dividend(
+            universe=universe_key,  # type: ignore[arg-type]
+            codes=code_list,
+            min_yield=min_yield,
+            max_yield=max_yield,
+            min_market_cap=min_market_cap,
+            max_pe=max_pe,
+            top=top,
+            trade_date=trade_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Dividend screen failed: {exc}")
 
 
 def _terminate_current_process() -> None:

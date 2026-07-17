@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { BarChart3, Bot, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, LogOut, UserRound, Clock } from "lucide-react";
+import { BarChart3, Bot, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, LogOut, UserRound, Clock, Percent } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
@@ -18,6 +18,7 @@ const NAV = [
   { to: "/scheduler", icon: Clock, label: "Scheduled Tasks" },
   { to: "/settings", icon: Settings, label: "Settings" },
   { to: "/correlation", icon: BarChart3, label: "Correlation Matrix" },
+  { to: "/dividends", icon: Percent, label: "High Dividend" },
 ];
 
 export function Layout() {
