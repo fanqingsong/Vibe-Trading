@@ -592,7 +592,9 @@ app.add_middleware(
 # text/html`` (e.g. a user pasting the URL into the address bar).
 
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-_SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset({"/correlation", "/dividends"})
+_SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset(
+    {"/correlation", "/dividends", "/buy-points"}
+)
 # Each regex matches a complete request path. Trailing slash optional.
 _SPA_HTML_PATH_REGEX: tuple[re.Pattern[str], ...] = (
     # ``/runs/{run_id}`` — RunDetail page. Excludes ``/runs/{id}/code``,
@@ -616,8 +618,9 @@ async def _spa_html_deep_link_fallback(request: Request, call_next):
     an SPA path that also exists as an API endpoint.
 
     Conflicts: ``/runs/{id}`` (RunDetail page vs API), ``/correlation``
-    (Correlation page vs API), and ``/dividends`` (Dividend screen page vs
-    API). Programmatic clients (``Accept: */*`` or ``application/json``)
+    (Correlation page vs API), ``/dividends`` (Dividend screen page vs
+    API), and ``/buy-points`` (Buy-points screen page vs API).
+    Programmatic clients (``Accept: */*`` or ``application/json``)
     still hit the real API handler.
     """
     if request.method == "GET":
@@ -1802,6 +1805,90 @@ async def screen_dividends(
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Dividend screen failed: {exc}")
+
+
+@app.get("/buy-points")
+async def screen_buy_points(
+    universe: str = Query(
+        "csi300",
+        description="Stock universe: csi300 | sp500 | custom",
+    ),
+    codes: str | None = Query(
+        None,
+        description="Comma-separated tickers (required when universe=custom)",
+    ),
+    prior_high_lookback: int = Query(60, description="Prior-high lookback sessions", ge=10, le=250),
+    prior_high_exclude: int = Query(
+        5,
+        description="Sessions excluded before breakout when measuring prior high",
+        ge=0,
+        le=30,
+    ),
+    min_pullback_days: int = Query(3, description="Min sessions after breakout before reclaim", ge=1, le=30),
+    max_pullback_days: int = Query(15, description="Max sessions after breakout for reclaim", ge=1, le=60),
+    hold_tolerance: float = Query(
+        0.02,
+        description="Allowed pullback below prior high (fraction, e.g. 0.02 = 2%)",
+        ge=0,
+        le=0.2,
+    ),
+    signal_freshness: int = Query(
+        10,
+        description="Only return signals whose reclaim bar is within N sessions",
+        ge=1,
+        le=30,
+    ),
+    require_volume: bool = Query(
+        True,
+        description="Require breakout volume >= 20-day average × volume_mult",
+    ),
+    volume_mult: float = Query(
+        1.2,
+        description="Breakout volume multiple of 20-day average",
+        ge=0.5,
+        le=5.0,
+    ),
+    top: int = Query(50, description="Max rows to return", ge=1, le=500),
+):
+    """Screen equities for right-side buy points (breakout → pullback holds → reclaim)."""
+    from backtest.buy_point_screen import screen_right_side_buy
+
+    universe_key = universe.strip().lower()
+    if universe_key not in ("csi300", "sp500", "custom"):
+        raise HTTPException(
+            status_code=400,
+            detail="universe must be one of: csi300, sp500, custom",
+        )
+
+    code_list: list[str] | None = None
+    if codes:
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        if len(code_list) > 500:
+            raise HTTPException(status_code=400, detail="Maximum 500 codes per request")
+    if universe_key == "custom" and not code_list:
+        raise HTTPException(status_code=400, detail="codes required when universe=custom")
+
+    try:
+        return await asyncio.to_thread(
+            screen_right_side_buy,
+            universe=universe_key,  # type: ignore[arg-type]
+            codes=code_list,
+            prior_high_lookback=prior_high_lookback,
+            prior_high_exclude=prior_high_exclude,
+            min_pullback_days=min_pullback_days,
+            max_pullback_days=max_pullback_days,
+            hold_tolerance=hold_tolerance,
+            signal_freshness=signal_freshness,
+            require_volume=require_volume,
+            volume_mult=volume_mult,
+            top=top,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Buy-point screen failed: {exc}")
 
 
 def _terminate_current_process() -> None:
