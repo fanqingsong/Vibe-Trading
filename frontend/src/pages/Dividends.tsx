@@ -85,7 +85,8 @@ export function Dividends() {
         <div>
           <h1 className="text-2xl font-bold">High Dividend Screen</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Rank equities by trailing dividend yield. A-shares use Tushare dv_ttm; US uses yfinance.
+            Rank equities by trailing dividend yield. A-shares use Tushare dv_ttm
+            (AKShare 分红送配 as free fallback); US uses yfinance.
           </p>
         </div>
       </div>

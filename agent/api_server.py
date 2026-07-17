@@ -1716,8 +1716,14 @@ async def get_correlation_matrix(
         raise HTTPException(status_code=400, detail="method must be 'pearson' or 'spearman'")
 
     try:
-        result = compute_correlation_matrix(codes=code_list, days=days, method=method)
-        return result
+        # Offload sync I/O + pandas work so a slow vendor call cannot starve
+        # the event loop (login /auth/*, /sessions, etc.).
+        return await asyncio.to_thread(
+            compute_correlation_matrix,
+            codes=code_list,
+            days=days,
+            method=method,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -1755,7 +1761,8 @@ async def screen_dividends(
 ):
     """Screen equities by trailing dividend yield (high-dividend screener).
 
-    A-shares use Tushare ``daily_basic.dv_ttm``; US names use yfinance
+    A-shares use Tushare ``daily_basic.dv_ttm`` with AKShare
+    ``stock_fhps_em`` as a free fallback; US names use yfinance
     ``dividendYield``. Results are ranked by yield descending.
     """
     from backtest.dividend_screen import screen_high_dividend
@@ -1776,7 +1783,10 @@ async def screen_dividends(
         raise HTTPException(status_code=400, detail="codes required when universe=custom")
 
     try:
-        return screen_high_dividend(
+        # Offload sync Tushare/yfinance I/O so a hung vendor call cannot block
+        # the whole API (symptom: /auth/login and /auth/status hang forever).
+        return await asyncio.to_thread(
+            screen_high_dividend,
             universe=universe_key,  # type: ignore[arg-type]
             codes=code_list,
             min_yield=min_yield,

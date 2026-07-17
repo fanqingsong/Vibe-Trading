@@ -42,6 +42,10 @@ export default defineConfig(({ mode }) => {
         "^/runs/[^/]+/?$": apiProxyWithHtmlFallback,
         "/runs": apiProxy,
         "/correlation": apiProxyWithHtmlFallback,
+        // Same SPA/API split as ``/correlation``: browser navigation to
+        // ``/dividends`` gets index.html; XHR/fetch with query params
+        // (universe, min_yield, ...) proxies to the backend screener.
+        "/dividends": apiProxyWithHtmlFallback,
         // The browser navigates to the ``/settings`` SPA page, while every
         // ``/settings/*`` API call must reach the backend. Route the whole
         // prefix through the HTML-fallback proxy so only the bare page path

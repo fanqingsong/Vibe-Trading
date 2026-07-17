@@ -5,7 +5,9 @@ filters. Used by the ``/dividends`` API endpoint.
 
 Data sources
 ------------
-- A-shares / ``csi300``: Tushare ``daily_basic`` (``dv_ttm`` in percent).
+- A-shares / ``csi300``: Tushare ``daily_basic`` (``dv_ttm`` in percent),
+  with AKShare ``stock_fhps_em`` (现金分红-股息率) as free fallback when
+  Tushare is missing or rate-limited.
 - US / ``sp500``: yfinance ``info.dividendYield`` (normalized to percent).
 - Custom code lists: market inferred per ticker.
 """
@@ -14,15 +16,23 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 Universe = Literal["csi300", "sp500", "custom"]
+
+# Free-tier daily_basic is often 1 call/minute. Sleep between empty→retry walks
+# so we do not burn the next slot immediately. Tests set this to 0.
+_DAILY_BASIC_RETRY_GAP_SEC = float(os.getenv("VIBE_TUSHARE_DAILY_BASIC_GAP_SEC", "65"))
+_CN_TZ = ZoneInfo("Asia/Shanghai")
 
 # Blue-chip A-share fallback when index constituents cannot be loaded.
 _CSI300_FALLBACK_CODES = [
@@ -201,12 +211,57 @@ def _resolve_sp500_codes() -> list[str]:
     return list(_SP500_FALLBACK_CODES)
 
 
-def _latest_trade_date(pro: Any, trade_date: str | None) -> str:
+def _is_tushare_hard_error(exc: BaseException) -> bool:
+    """True when the error is auth / quota / permission — not worth retrying."""
+    msg = str(exc)
+    markers = (
+        "频率超限",
+        "没有接口",
+        "访问权限",
+        "积分不足",
+        "token不对",
+        "您的token",
+        "权限的具体详情",
+    )
+    return any(m in msg for m in markers)
+
+
+def _format_tushare_failure(api: str, exc: BaseException) -> str:
+    msg = str(exc).strip() or type(exc).__name__
+    if "频率超限" in msg:
+        # Prefer the limit Tushare reported (e.g. 1次/分钟) over a hardcoded hint.
+        m = re.search(r"频率超限\(([^)]+)\)", msg)
+        limit = m.group(1) if m else "quota exhausted"
+        return (
+            f"Tushare {api} rate-limited ({msg}). "
+            f"Wait for the limit window ({limit}) and retry, or upgrade Tushare积分."
+        )
+    if "没有接口" in msg or "访问权限" in msg or "权限" in msg:
+        return (
+            f"Tushare {api} permission denied ({msg}). "
+            "Your token lacks access to this endpoint; upgrade the Tushare plan."
+        )
+    if "token" in msg.lower() or "您的token" in msg:
+        return (
+            f"Tushare token rejected ({msg}). "
+            "Update TUSHARE_TOKEN in Settings."
+        )
+    return f"Tushare {api} failed: {msg}"
+
+
+def _candidate_trade_dates(pro: Any, trade_date: str | None) -> list[str]:
+    """Newest-first trade dates to try for daily_basic.
+
+    When ``trade_date`` is set, only that day is tried. Otherwise prefer open
+    sessions from ``trade_cal``; if that call fails (common on free-tier rate
+    limits), fall back to walking back calendar days so today's empty/unpublished
+    ``daily_basic`` can still resolve to the prior session.
+    """
     if trade_date:
-        return trade_date.replace("-", "")
-    # Walk back a few calendar days to find the last open session.
+        return [trade_date.replace("-", "")]
+
     cal_end = datetime.now()
-    cal_start = cal_end - timedelta(days=14)
+    cal_start = cal_end - timedelta(days=21)
     try:
         cal = pro.trade_cal(
             exchange="SSE",
@@ -215,10 +270,41 @@ def _latest_trade_date(pro: Any, trade_date: str | None) -> str:
             is_open="1",
         )
         if cal is not None and not cal.empty:
-            return str(cal["cal_date"].max())
+            dates = sorted(
+                {str(d) for d in cal["cal_date"].tolist()},
+                reverse=True,
+            )
+            if dates:
+                return dates
     except Exception as exc:  # noqa: BLE001
-        logger.warning("dividend_screen: trade_cal failed (%s); using today", exc)
-    return cal_end.strftime("%Y%m%d")
+        if _is_tushare_hard_error(exc):
+            logger.warning(
+                "dividend_screen: trade_cal unavailable (%s); "
+                "walking back calendar days",
+                exc,
+            )
+        else:
+            logger.warning("dividend_screen: trade_cal failed (%s)", exc)
+
+    return [
+        (cal_end - timedelta(days=i)).strftime("%Y%m%d")
+        for i in range(0, 14)
+    ]
+
+
+def _defer_today_trade_date(candidates: list[str]) -> list[str]:
+    """Put Shanghai 'today' after prior sessions when auto-picking dates.
+
+    ``daily_basic`` for the current session is often empty until evening publish.
+    Trying today first then walking back burns free-tier 1/min quota on the
+    second call. Prefer the previous open day so the common path is one call.
+    """
+    if len(candidates) < 2:
+        return candidates
+    today = datetime.now(_CN_TZ).strftime("%Y%m%d")
+    if candidates[0] != today:
+        return candidates
+    return candidates[1:] + [candidates[0]]
 
 
 def _stock_name_map(pro: Any, codes: list[str]) -> dict[str, str]:
@@ -236,14 +322,161 @@ def _stock_name_map(pro: Any, codes: list[str]) -> dict[str, str]:
     return names
 
 
-def _fetch_a_share_basics(
+def _digits_to_ts_code(digits: str) -> str:
+    digits = str(digits).strip().zfill(6)
+    suffix = ".SH" if digits.startswith(("60", "68", "90")) else ".SZ"
+    return f"{digits}{suffix}"
+
+
+def _fhps_report_dates() -> list[str]:
+    """Report periods for stock_fhps_em: year-ends first, then mid-years.
+
+    Mid-year periods are often sparse early in the season (a handful of
+    interim dividends). Preferring ``*1231`` avoids returning a near-empty
+    screen when a thin ``*0630`` happens to match one universe name.
+    """
+    now = datetime.now(_CN_TZ)
+    today = now.strftime("%Y%m%d")
+    year_ends: list[str] = []
+    mid_years: list[str] = []
+    for y in range(now.year, now.year - 3, -1):
+        ye, my = f"{y}1231", f"{y}0630"
+        if ye <= today:
+            year_ends.append(ye)
+        if my <= today:
+            mid_years.append(my)
+    return year_ends + mid_years
+
+
+def _fhps_min_coverage(universe_size: int) -> int:
+    """Minimum overlapping names before accepting an fhps period as primary."""
+    if universe_size <= 5:
+        return 1
+    return max(10, universe_size // 10)
+
+
+def _fetch_a_share_basics_akshare(codes: list[str]) -> tuple[pd.DataFrame, str, str]:
+    """Fetch A-share dividend yields via AKShare East Money 分红送配.
+
+    Walks year-end then mid-year report periods, keeping the newest yield per
+    code. Skips thin early-season mid-year dumps that would otherwise return
+    before a full annual file is tried. PE / PB / market-cap are not available
+    from this endpoint (optional filters simply no-op).
+    """
+    try:
+        import akshare as ak
+    except ImportError as exc:
+        raise RuntimeError(
+            "akshare is required for the free A-share dividend-yield fallback"
+        ) from exc
+
+    wanted = set(codes)
+    by_code: dict[str, dict[str, Any]] = {}
+    dates_used: list[str] = []
+    last_error: BaseException | None = None
+    min_coverage = _fhps_min_coverage(len(wanted))
+    report_dates = _fhps_report_dates()
+
+    for idx, report_date in enumerate(report_dates):
+        try:
+            bulk = ak.stock_fhps_em(date=report_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "dividend_screen: stock_fhps_em(%s) failed (%s)",
+                report_date,
+                exc,
+            )
+            last_error = exc
+            continue
+
+        if bulk is None or bulk.empty or "代码" not in bulk.columns:
+            continue
+        if "现金分红-股息率" not in bulk.columns:
+            continue
+
+        added_codes: list[str] = []
+        for _, row in bulk.iterrows():
+            ts_code = _digits_to_ts_code(row["代码"])
+            if ts_code not in wanted or ts_code in by_code:
+                continue
+            yield_pct = _normalize_yield_pct(row.get("现金分红-股息率"))
+            if yield_pct is None:
+                continue
+            by_code[ts_code] = {
+                "ts_code": ts_code,
+                "name": str(row.get("名称") or ""),
+                "dv_ttm": yield_pct,
+                "pe_ttm": None,
+                "pb": None,
+                "total_mv": None,
+                "close": None,
+            }
+            added_codes.append(ts_code)
+
+        added = len(added_codes)
+        later_annual = any(d.endswith("1231") for d in report_dates[idx + 1 :])
+        # Ignore sparse mid-year dumps when a fuller year-end is still ahead.
+        if (
+            added
+            and added < min_coverage
+            and report_date.endswith("0630")
+            and later_annual
+        ):
+            for code in added_codes:
+                by_code.pop(code, None)
+            logger.info(
+                "dividend_screen: skip thin stock_fhps_em(%s) (%d names); "
+                "prefer later year-end",
+                report_date,
+                added,
+            )
+            continue
+
+        if added:
+            dates_used.append(report_date)
+            logger.info(
+                "dividend_screen: stock_fhps_em(%s) added %d (total %d/%d)",
+                report_date,
+                added,
+                len(by_code),
+                len(wanted),
+            )
+
+        # Stop once a year-end (or any period) gives solid universe coverage.
+        if len(by_code) >= min_coverage and (
+            report_date.endswith("1231")
+            or len(by_code) >= max(min_coverage, len(wanted) // 2)
+        ):
+            break
+
+    if not by_code:
+        if last_error is not None:
+            raise RuntimeError(
+                f"AKShare stock_fhps_em failed: {last_error}"
+            ) from last_error
+        raise RuntimeError(
+            "No AKShare dividend-yield rows for the requested A-share universe. "
+            "Tried recent year-end/mid-year report periods via stock_fhps_em."
+        )
+
+    primary = next((d for d in dates_used if d.endswith("1231")), dates_used[0])
+    source = f"akshare.stock_fhps_em(date={primary})"
+    if len(dates_used) > 1:
+        source = f"akshare.stock_fhps_em(date={primary}+{len(dates_used) - 1}more)"
+    frame = pd.DataFrame(list(by_code.values()))
+    logger.info(
+        "dividend_screen: %d A-share yields from %s",
+        len(frame),
+        source,
+    )
+    return frame, primary, source
+
+
+def _fetch_a_share_basics_tushare(
     codes: list[str],
     trade_date: str | None = None,
 ) -> tuple[pd.DataFrame, str, str]:
-    """Fetch latest daily_basic rows for A-share codes.
-
-    Returns (dataframe, trade_date, source_label).
-    """
+    """Fetch latest daily_basic rows via Tushare."""
     token = _tushare_token()
     if not token:
         raise RuntimeError(
@@ -254,38 +487,61 @@ def _fetch_a_share_basics(
     import tushare as ts
 
     pro = ts.pro_api(token)
-    td = _latest_trade_date(pro, trade_date)
+    candidates = _candidate_trade_dates(pro, trade_date)
+    if not trade_date:
+        candidates = _defer_today_trade_date(candidates)
     fields = "ts_code,trade_date,close,dv_ttm,pe_ttm,pb,total_mv"
 
-    # Prefer one bulk call for the trade date, then filter to the universe.
     frame: pd.DataFrame | None = None
-    try:
-        bulk = pro.daily_basic(trade_date=td, fields=fields)
+    td = candidates[0]
+    source = "tushare.daily_basic(trade_date)"
+    last_hard_error: BaseException | None = None
+
+    # Prefer a published prior session first (see _defer_today_trade_date). If a
+    # day is empty, wait before the next daily_basic call — free tier is often
+    # 1/min and an immediate retry would rate-limit.
+    for idx, candidate in enumerate(candidates):
+        try:
+            bulk = pro.daily_basic(trade_date=candidate, fields=fields)
+        except Exception as exc:  # noqa: BLE001
+            if _is_tushare_hard_error(exc):
+                # Do not hammer per-code fallback on rate-limit / permission errors.
+                raise RuntimeError(_format_tushare_failure("daily_basic", exc)) from exc
+            logger.warning(
+                "dividend_screen: daily_basic(%s) failed (%s); trying earlier date",
+                candidate,
+                exc,
+            )
+            last_hard_error = exc
+            continue
+
         if bulk is not None and not bulk.empty:
             frame = bulk
+            td = candidate
             source = "tushare.daily_basic(trade_date)"
-        else:
-            source = "tushare.daily_basic(per-code)"
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("dividend_screen: bulk daily_basic failed (%s); per-code fallback", exc)
-        source = "tushare.daily_basic(per-code)"
+            break
+        logger.info(
+            "dividend_screen: daily_basic empty for %s; trying earlier date",
+            candidate,
+        )
+        if idx + 1 < len(candidates) and _DAILY_BASIC_RETRY_GAP_SEC > 0:
+            logger.info(
+                "dividend_screen: waiting %.0fs before next daily_basic "
+                "(avoid free-tier rate limit)",
+                _DAILY_BASIC_RETRY_GAP_SEC,
+            )
+            time.sleep(_DAILY_BASIC_RETRY_GAP_SEC)
 
     if frame is None or frame.empty:
-        rows: list[pd.DataFrame] = []
-        for code in codes:
-            try:
-                part = pro.daily_basic(ts_code=code, trade_date=td, fields=fields)
-                if part is not None and not part.empty:
-                    rows.append(part)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("dividend_screen: daily_basic %s failed: %s", code, exc)
-        if not rows:
+        if last_hard_error is not None:
             raise RuntimeError(
-                f"No daily_basic rows for trade_date={td}. "
-                "Check Tushare积分 / network, or try an earlier trade_date."
-            )
-        frame = pd.concat(rows, ignore_index=True)
-        source = "tushare.daily_basic(per-code)"
+                _format_tushare_failure("daily_basic", last_hard_error)
+            ) from last_hard_error
+        tried = ", ".join(candidates[:5])
+        raise RuntimeError(
+            f"No daily_basic rows for trade dates [{tried}]. "
+            "Check Tushare积分 / network, or pass an earlier trade_date."
+        )
 
     frame = frame[frame["ts_code"].isin(codes)].copy()
     if frame.empty:
@@ -300,6 +556,41 @@ def _fetch_a_share_basics(
     names = _stock_name_map(pro, codes)
     frame["name"] = frame["ts_code"].map(names).fillna("")
     return frame, td, source
+
+
+def _fetch_a_share_basics(
+    codes: list[str],
+    trade_date: str | None = None,
+) -> tuple[pd.DataFrame, str, str]:
+    """Fetch A-share dividend fundamentals (Tushare, else AKShare).
+
+    Returns (dataframe, trade_date_or_report_date, source_label).
+    """
+    token = _tushare_token()
+    tushare_error: BaseException | None = None
+
+    if token:
+        try:
+            return _fetch_a_share_basics_tushare(codes, trade_date=trade_date)
+        except RuntimeError as exc:
+            tushare_error = exc
+            logger.warning(
+                "dividend_screen: Tushare unavailable (%s); falling back to AKShare",
+                exc,
+            )
+    else:
+        logger.info(
+            "dividend_screen: no TUSHARE_TOKEN; using AKShare stock_fhps_em"
+        )
+
+    try:
+        return _fetch_a_share_basics_akshare(codes)
+    except Exception as ak_exc:  # noqa: BLE001
+        if tushare_error is not None:
+            raise RuntimeError(
+                f"{tushare_error} AKShare fallback also failed: {ak_exc}"
+            ) from ak_exc
+        raise
 
 
 def _fetch_us_basics(codes: list[str]) -> tuple[pd.DataFrame, str, str]:
