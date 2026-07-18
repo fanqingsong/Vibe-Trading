@@ -44,12 +44,13 @@ _FETCH_WORKERS = 8
 _CALENDAR_PAD_DAYS = 130
 # Prefer bulk Tushare-by-date (≈1 call/day for all names) over per-code daily
 # (50/min quota). Free HTTP/TCP sources fill gaps when bulk is unavailable.
-_A_SHARE_BULK_CHAIN = ("tushare_bulk", "mootdx", "akshare", "tushare")
-_A_SHARE_SMALL_CHAIN = ("akshare", "mootdx", "tushare")  # custom / tiny lists
+_A_SHARE_BULK_CHAIN = ("sina", "tushare_bulk", "mootdx", "akshare", "tushare")
+_A_SHARE_SMALL_CHAIN = ("sina", "akshare", "mootdx", "tushare")  # custom / chart enrich
 _US_SCREEN_CHAIN = ("yfinance", "akshare")
 _TUSHARE_MIN_INTERVAL_SEC = 1.22  # stay under ~50 calls/min
 _AKSHARE_RETRIES = 2
-_SMALL_UNIVERSE = 20
+_SMALL_UNIVERSE = 80  # dividend Top-N chart enrich stays on per-code/Sina path
+_SINA_KLINE_DATALEN = 120
 _BULK_CACHE_TTL_SEC = 45 * 60
 _bulk_cache: dict[str, tuple[float, dict[str, pd.DataFrame]]] = {}
 _BULK_DISK_DIR = None  # lazy Path
@@ -261,6 +262,8 @@ def screen_right_side_buy(
             {
                 "code": code,
                 "name": "",
+                "sparkline": _sparkline_series(frame, limit=60),
+                "bars": _ohlcv_bars(frame, limit=120),
                 **signal,
             }
         )
@@ -270,6 +273,12 @@ def screen_right_side_buy(
         reverse=True,
     )
     results = matched[:top]
+    if results:
+        name_map = _resolve_security_names(
+            [row["code"] for row in results], market=market
+        )
+        for row in results:
+            row["name"] = name_map.get(row["code"], "") or ""
     trade_date = ""
     if price_map:
         # Latest bar date across successfully fetched series.
@@ -328,17 +337,289 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"OHLCV frame missing columns: {missing}")
 
-    out = frame[["trade_date", "high", "low", "close", "volume"]].copy()
+    cols = ["trade_date", "high", "low", "close", "volume"]
+    if "open" in frame.columns:
+        cols.insert(1, "open")
+    out = frame[cols].copy()
     out["trade_date"] = pd.to_datetime(out["trade_date"])
     out = out.dropna(subset=["high", "low", "close"])
     out = out.sort_values("trade_date").reset_index(drop=True)
     out["volume"] = out["volume"].fillna(0.0)
+    if "open" not in out.columns:
+        out["open"] = out["close"]
+    else:
+        out["open"] = out["open"].fillna(out["close"])
     return out
 
 
 def _fmt_date(value: Any) -> str:
     ts = pd.Timestamp(value)
     return ts.strftime("%Y-%m-%d")
+
+
+def _sparkline_series(df: pd.DataFrame, *, limit: int = 60) -> list[dict[str, Any]]:
+    """Last ``limit`` closes for table sparklines (already in memory from screen)."""
+    bars = _ohlcv_bars(df, limit=limit)
+    return [{"date": b["time"], "close": b["close"]} for b in bars]
+
+
+def _ohlcv_bars(df: pd.DataFrame, *, limit: int = 120) -> list[dict[str, Any]]:
+    """Last ``limit`` OHLCV bars for expanded candlestick charts."""
+    bars = _normalize_ohlcv(df)
+    if bars.empty:
+        return []
+    tail = bars.tail(limit)
+    out: list[dict[str, Any]] = []
+    for row in tail.itertuples(index=False):
+        try:
+            o = float(row.open)
+            h = float(row.high)
+            low = float(row.low)
+            c = float(row.close)
+            v = float(row.volume)
+        except (TypeError, ValueError):
+            continue
+        if any(x != x for x in (o, h, low, c)):  # NaN
+            continue
+        out.append(
+            {
+                "time": _fmt_date(row.trade_date),
+                "open": round(o, 4),
+                "high": round(h, 4),
+                "low": round(low, 4),
+                "close": round(c, 4),
+                "volume": round(v, 2),
+            }
+        )
+    return out
+
+
+def _resolve_security_names(
+    codes: list[str],
+    *,
+    market: Literal["a_share", "us_equity"],
+) -> dict[str, str]:
+    """Best-effort name lookup for screen result rows."""
+    if not codes:
+        return {}
+    if market == "a_share":
+        names = _resolve_a_share_names(codes)
+        if names:
+            return names
+        return {}
+    return _resolve_us_names(codes)
+
+
+def _resolve_a_share_names(codes: list[str]) -> dict[str, str]:
+    """Resolve A-share display names with cache + multi-source fallback.
+
+    Order: disk/memory cache → Sina quote (reliable in restricted networks) →
+    Tushare ``stock_basic`` → AKShare code/name table.
+    """
+    import os
+    import time
+
+    wanted = list(dict.fromkeys(c.upper() for c in codes))
+    names: dict[str, str] = {}
+
+    # 1) Warm from persistent cache.
+    cache = _load_name_cache()
+    for code in wanted:
+        cached = cache.get(code)
+        if cached:
+            names[code] = cached
+
+    missing = [c for c in wanted if not names.get(c)]
+    if not missing:
+        return {c: names.get(c.upper(), "") for c in codes}
+
+    # 2) Sina batch quote — returns 名称 in the first CSV field.
+    sina_names = _fetch_a_share_names_sina(missing)
+    names.update({k: v for k, v in sina_names.items() if v})
+    missing = [c for c in wanted if not names.get(c)]
+
+    # 3) Tushare stock_basic (often rate-limited; cache hard when it works).
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
+    if missing and token and token != "your-tushare-token":
+        try:
+            import tushare as ts
+
+            pro = ts.pro_api(token)
+            basic = pro.stock_basic(exchange="", list_status="L", fields="ts_code,name")
+            if basic is not None and not basic.empty:
+                for _, row in basic.iterrows():
+                    code = str(row["ts_code"]).upper()
+                    name = str(row["name"] or "").strip()
+                    if name:
+                        cache[code] = name
+                        if code in missing:
+                            names[code] = name
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("buy_point_screen: tushare stock_basic names failed (%s)", exc)
+
+    missing = [c for c in wanted if not names.get(c)]
+
+    # 4) AKShare last resort.
+    if missing:
+        try:
+            import akshare as ak
+
+            info = ak.stock_info_a_code_name()
+            if info is not None and not info.empty:
+                code_col = "code" if "code" in info.columns else "代码"
+                name_col = "name" if "name" in info.columns else "名称"
+                for _, row in info.iterrows():
+                    digits = str(row[code_col]).strip().zfill(6)
+                    code = _normalize_a_share_code(digits)
+                    name = str(row[name_col] or "").strip()
+                    if name:
+                        cache[code] = name
+                        if code in missing:
+                            names[code] = name
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("buy_point_screen: akshare code_name failed (%s)", exc)
+
+    # Persist whatever we learned (including Sina hits).
+    for code, name in names.items():
+        if name:
+            cache[code] = name
+    _save_name_cache(cache)
+
+    return {c: names.get(c.upper(), "") for c in codes}
+
+
+_NAME_CACHE_TTL_SEC = 7 * 24 * 3600
+_name_mem_cache: dict[str, str] | None = None
+_name_mem_cache_loaded_at = 0.0
+
+
+def _name_cache_path():
+    return _bulk_disk_dir() / "a_share_names.json"
+
+
+def _load_name_cache() -> dict[str, str]:
+    global _name_mem_cache, _name_mem_cache_loaded_at
+    import json
+    import time
+
+    now = time.time()
+    if _name_mem_cache is not None and now - _name_mem_cache_loaded_at < 300:
+        return dict(_name_mem_cache)
+
+    path = _name_cache_path()
+    payload: dict[str, str] = {}
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            saved_at = float(raw.get("saved_at") or 0)
+            if time.time() - saved_at <= _NAME_CACHE_TTL_SEC:
+                payload = {
+                    str(k).upper(): str(v).strip()
+                    for k, v in (raw.get("names") or {}).items()
+                    if v
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("buy_point_screen: name cache read failed: %s", exc)
+
+    _name_mem_cache = payload
+    _name_mem_cache_loaded_at = now
+    return dict(payload)
+
+
+def _save_name_cache(names: dict[str, str]) -> None:
+    global _name_mem_cache, _name_mem_cache_loaded_at
+    import json
+    import time
+
+    cleaned = {k.upper(): v.strip() for k, v in names.items() if v and str(v).strip()}
+    if not cleaned:
+        return
+    _name_mem_cache = cleaned
+    _name_mem_cache_loaded_at = time.time()
+    try:
+        _name_cache_path().write_text(
+            json.dumps({"saved_at": time.time(), "names": cleaned}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("buy_point_screen: name cache write failed: %s", exc)
+
+
+def _sina_list_symbol(code: str) -> str | None:
+    code = code.strip().upper()
+    if "." not in code:
+        code = _normalize_a_share_code(code)
+    digits, _, exch = code.partition(".")
+    prefix = {"SH": "sh", "SZ": "sz", "BJ": "bj"}.get(exch)
+    if not prefix or not digits:
+        return None
+    return f"{prefix}{digits}"
+
+
+def _fetch_a_share_names_sina(codes: list[str]) -> dict[str, str]:
+    """Batch-fetch names from Sina HQ strings (no token, works when EM is blocked)."""
+    import re
+    import urllib.error
+    import urllib.request
+
+    symbols: list[tuple[str, str]] = []
+    for code in codes:
+        sym = _sina_list_symbol(code)
+        if sym:
+            symbols.append((code.upper(), sym))
+    if not symbols:
+        return {}
+
+    names: dict[str, str] = {}
+    # Sina accepts comma-joined lists; keep batches modest.
+    for i in range(0, len(symbols), 80):
+        batch = symbols[i : i + 80]
+        url = "https://hq.sinajs.cn/list=" + ",".join(sym for _, sym in batch)
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Referer": "https://finance.sina.com.cn",
+                    "User-Agent": "Mozilla/5.0 (Vibe-Trading buy-point screen)",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = resp.read().decode("gbk", errors="ignore")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            logger.warning("buy_point_screen: sina name batch failed (%s)", exc)
+            continue
+
+        # var hq_str_sz000725="京东方Ａ,6.09,...";
+        for code, sym in batch:
+            m = re.search(
+                rf'hq_str_{re.escape(sym)}="([^,]*)',
+                body,
+            )
+            if not m:
+                continue
+            name = m.group(1).strip()
+            if name:
+                # Normalize fullwidth Ａ → A for display consistency.
+                names[code] = name.replace("Ａ", "A").replace("Ｂ", "B")
+
+    return names
+
+
+def _resolve_us_names(codes: list[str]) -> dict[str, str]:
+    names: dict[str, str] = {}
+    try:
+        import yfinance as yf
+    except ImportError:
+        return {c: "" for c in codes}
+
+    for code in codes:
+        try:
+            info = yf.Ticker(code).info or {}
+            name = str(info.get("shortName") or info.get("longName") or "").strip()
+            names[code] = name
+        except Exception:  # noqa: BLE001
+            names[code] = ""
+    return names
 
 
 def _fetch_ohlcv(
@@ -386,7 +667,11 @@ def _fetch_ohlcv(
         before = len(results)
         got: dict[str, pd.DataFrame] = {}
 
-        if source_name == "tushare_bulk":
+        if source_name == "sina":
+            if market != "a_share":
+                continue
+            got = _fetch_a_share_ohlcv_sina(remaining, datalen=_SINA_KLINE_DATALEN)
+        elif source_name == "tushare_bulk":
             got, aborted = _fetch_a_share_tushare_bulk(
                 remaining, start_date=start_date, end_date=end_date
             )
@@ -457,6 +742,66 @@ def _fetch_ohlcv(
 
     source = "+".join(sources_used) if sources_used else market
     return results, source
+
+
+def _fetch_a_share_ohlcv_sina(
+    codes: list[str],
+    *,
+    datalen: int = 120,
+) -> dict[str, pd.DataFrame]:
+    """Fetch daily OHLCV via Sina K-line JSON API (no token; works when EM is blocked)."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    results: dict[str, pd.DataFrame] = {}
+
+    def _one(code: str) -> tuple[str, pd.DataFrame | None]:
+        sym = _sina_list_symbol(code)
+        if not sym:
+            return code, None
+        url = (
+            "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            f"CN_MarketData.getKLineData?symbol={sym}&scale=240&ma=no&datalen={datalen}"
+        )
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Referer": "https://finance.sina.com.cn",
+                    "User-Agent": "Mozilla/5.0 (Vibe-Trading chart enrich)",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                body = resp.read().decode("utf-8", errors="ignore").strip()
+            if not body or body[0] not in "[{":
+                return code, None
+            rows = json.loads(body)
+            if not rows:
+                return code, None
+            frame = pd.DataFrame(rows)
+            # Sina fields: day, open, high, low, close, volume
+            frame = frame.rename(columns={"day": "trade_date"})
+            for col in ("open", "high", "low", "close", "volume"):
+                frame[col] = pd.to_numeric(frame[col], errors="coerce")
+            frame["trade_date"] = pd.to_datetime(frame["trade_date"])
+            frame = frame.dropna(subset=["open", "high", "low", "close"])
+            frame = frame.sort_values("trade_date").reset_index(drop=True)
+            if frame.empty:
+                return code, None
+            return code, frame[["trade_date", "open", "high", "low", "close", "volume"]]
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.debug("buy_point_screen: sina kline %s failed: %s", code, exc)
+            return code, None
+
+    workers = min(_FETCH_WORKERS, max(1, len(codes)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_one, code) for code in codes]
+        for fut in as_completed(futures):
+            code, frame = fut.result()
+            if frame is not None:
+                results[code] = frame
+    return results
 
 
 def _fetch_a_share_tushare_bulk(

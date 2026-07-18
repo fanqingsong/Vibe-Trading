@@ -818,6 +818,8 @@ def screen_high_dividend(
         market = "us_equity"
 
     results = _rows_from_frame(filtered, market_cap_unit=market_cap_unit, top=top)
+    chart_source = _attach_price_charts(results, market=market)
+    source_out = source if not chart_source else f"{source}+charts:{chart_source}"
     return {
         "universe": universe,
         "market": market,
@@ -830,6 +832,62 @@ def screen_high_dividend(
         "universe_size": len(resolved),
         "matched": int(len(filtered)),
         "count": len(results),
-        "source": source,
+        "source": source_out,
         "results": results,
     }
+
+
+def _attach_price_charts(
+    results: list[dict[str, Any]],
+    *,
+    market: str,
+) -> str:
+    """Attach sparkline + OHLCV bars for expand charts (best-effort)."""
+    if not results:
+        return ""
+
+    codes = [str(r["code"]) for r in results]
+    for row in results:
+        row.setdefault("sparkline", [])
+        row.setdefault("bars", [])
+
+    try:
+        # Lazy import avoids circular dependency with buy_point_screen.
+        from backtest.buy_point_screen import (
+            _fetch_ohlcv,
+            _ohlcv_bars,
+            _sparkline_series,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dividend_screen: chart helpers unavailable (%s)", exc)
+        return ""
+
+    if market == "a_share":
+        fetch_codes = [_normalize_a_share_code(c) for c in codes]
+        market_key = "a_share"
+    else:
+        fetch_codes = [_normalize_us_code(c) for c in codes]
+        market_key = "us_equity"
+
+    try:
+        price_map, chart_source = _fetch_ohlcv(fetch_codes, market=market_key)  # type: ignore[arg-type]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dividend_screen: OHLCV for charts failed (%s)", exc)
+        return ""
+
+    # Map both original and normalized codes.
+    by_code: dict[str, Any] = {}
+    for code, frame in price_map.items():
+        by_code[code] = frame
+        by_code[code.upper()] = frame
+
+    for row, fetch_code in zip(results, fetch_codes):
+        frame = by_code.get(fetch_code)
+        if frame is None:
+            frame = by_code.get(str(row["code"]).upper())
+        if frame is None:
+            continue
+        row["sparkline"] = _sparkline_series(frame, limit=60)
+        row["bars"] = _ohlcv_bars(frame, limit=120)
+
+    return chart_source

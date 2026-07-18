@@ -1,7 +1,15 @@
-import { useState } from "react";
-import { Crosshair } from "lucide-react";
+import { Fragment, useState } from "react";
+import { ChevronDown, Crosshair } from "lucide-react";
+import { Sparkline } from "@/components/charts/Sparkline";
+import { CandlestickChart } from "@/components/charts/CandlestickChart";
+import type { PriceBar, TradeMarker } from "@/lib/api";
 
 type Universe = "csi300" | "sp500" | "custom";
+
+interface SparkPoint {
+  date: string;
+  close: number;
+}
 
 interface BuyPointRow {
   code: string;
@@ -16,6 +24,8 @@ interface BuyPointRow {
   volume_ratio: number | null;
   days_since_signal: number;
   days_after_breakout: number;
+  sparkline?: SparkPoint[];
+  bars?: PriceBar[];
 }
 
 interface ScreenResult {
@@ -57,10 +67,12 @@ export function BuyPoints() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
+  const [expandedCode, setExpandedCode] = useState<string | null>(null);
 
   const runScreen = async () => {
     setError(null);
     setLoading(true);
+    setExpandedCode(null);
     try {
       const params = new URLSearchParams({
         universe,
@@ -93,8 +105,9 @@ export function BuyPoints() {
           <h1 className="text-2xl font-bold">Right-Side Buy Points</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Breakout of prior high, pullback holds, then reclaim — volume confirm
-            on by default. CSI 300 first run may take ~2 minutes (Tushare by-date
-            bulk); later runs reuse a short cache.
+            on by default. Click a row to expand the 120-day candlestick chart.
+            CSI 300 first run may take ~2 minutes (Tushare by-date bulk); later
+            runs reuse a short cache.
           </p>
         </div>
       </div>
@@ -254,6 +267,8 @@ export function BuyPoints() {
                   <tr className="border-b bg-muted/40 text-left">
                     <th className="px-3 py-2 font-medium w-10">#</th>
                     <th className="px-3 py-2 font-medium">Code</th>
+                    <th className="px-3 py-2 font-medium">Name</th>
+                    <th className="px-3 py-2 font-medium">Trend (60d)</th>
                     <th className="px-3 py-2 font-medium">Signal</th>
                     <th className="px-3 py-2 font-medium">Breakout</th>
                     <th className="px-3 py-2 font-medium text-right">Prior High</th>
@@ -265,26 +280,81 @@ export function BuyPoints() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.results.map((row, i) => (
-                    <tr key={row.code} className="border-b last:border-0 hover:bg-muted/20">
-                      <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
-                      <td className="px-3 py-2 font-mono">{row.code}</td>
-                      <td className="px-3 py-2 tabular-nums">{row.signal_date}</td>
-                      <td className="px-3 py-2 tabular-nums">{row.breakout_date}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(row.prior_high)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(row.pullback_low)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(row.close)}</td>
-                      <td className="px-3 py-2 text-right font-medium tabular-nums">
-                        {fmt(row.breakout_pct)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {row.volume_ratio == null ? "—" : row.volume_ratio.toFixed(2)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {row.days_since_signal}
-                      </td>
-                    </tr>
-                  ))}
+                  {data.results.map((row, i) => {
+                    const open = expandedCode === row.code;
+                    return (
+                      <Fragment key={row.code}>
+                        <tr
+                          className={`border-b last:border-0 hover:bg-muted/20 cursor-pointer ${
+                            open ? "bg-muted/30" : ""
+                          }`}
+                          onClick={() =>
+                            setExpandedCode(open ? null : row.code)
+                          }
+                        >
+                          <td className="px-3 py-2 text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                              <ChevronDown
+                                className={`h-3.5 w-3.5 transition-transform ${
+                                  open ? "rotate-180" : ""
+                                }`}
+                              />
+                              {i + 1}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-mono">{row.code}</td>
+                          <td className="px-3 py-2">{row.name || "—"}</td>
+                          <td className="px-3 py-2">
+                            <Sparkline
+                              points={row.sparkline ?? []}
+                              priorHigh={row.prior_high}
+                              signalDate={row.signal_date}
+                              width={128}
+                              height={36}
+                              className="text-muted-foreground"
+                            />
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">{row.signal_date}</td>
+                          <td className="px-3 py-2 tabular-nums">{row.breakout_date}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.prior_high)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.pullback_low)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.close)}</td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">
+                            {fmt(row.breakout_pct)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {row.volume_ratio == null ? "—" : row.volume_ratio.toFixed(2)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {row.days_since_signal}
+                          </td>
+                        </tr>
+                        {open && (
+                          <tr className="border-b bg-muted/10">
+                            <td colSpan={12} className="px-3 py-4">
+                              <div className="flex flex-col gap-2">
+                                <div className="text-xs text-muted-foreground">
+                                  {row.name || row.code} · 120-day daily chart ·
+                                  markers: breakout / right-side buy
+                                </div>
+                                {(row.bars?.length ?? 0) < 2 ? (
+                                  <div className="text-sm text-muted-foreground py-8 text-center">
+                                    No bar data available for this symbol.
+                                  </div>
+                                ) : (
+                                  <CandlestickChart
+                                    data={row.bars!}
+                                    markers={chartMarkers(row)}
+                                    height={420}
+                                  />
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -298,6 +368,33 @@ export function BuyPoints() {
 function fmt(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return "—";
   return v.toFixed(2);
+}
+
+function chartMarkers(row: BuyPointRow): TradeMarker[] {
+  const markers: TradeMarker[] = [];
+  const breakoutBar = row.bars?.find((b) => b.time === row.breakout_date);
+  const signalBar = row.bars?.find((b) => b.time === row.signal_date);
+  if (breakoutBar) {
+    markers.push({
+      time: row.breakout_date,
+      code: row.code,
+      side: "BUY",
+      price: breakoutBar.close,
+      reason: "Breakout",
+      text: "Breakout",
+    });
+  }
+  if (signalBar) {
+    markers.push({
+      time: row.signal_date,
+      code: row.code,
+      side: "BUY",
+      price: signalBar.close,
+      reason: "Right-side buy",
+      text: "Buy",
+    });
+  }
+  return markers;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {

@@ -178,6 +178,62 @@ class TestScreenValidation:
         assert out["results"][0]["code"] == "BBB"
         assert out["results"][0]["breakout_pct"] > out["results"][1]["breakout_pct"]
 
+    def test_screen_fills_security_names(self, monkeypatch: pytest.MonkeyPatch):
+        from backtest import buy_point_screen as mod
+
+        frame = _pattern_frame(trailing=0)
+        monkeypatch.setattr(
+            mod,
+            "resolve_universe_codes",
+            lambda universe, codes=None: ["600036.SH"],
+        )
+        monkeypatch.setattr(
+            mod,
+            "_fetch_ohlcv",
+            lambda codes, market: ({"600036.SH": frame}, "test"),
+        )
+        monkeypatch.setattr(
+            mod,
+            "_resolve_security_names",
+            lambda codes, market: {"600036.SH": "招商银行"},
+        )
+
+        out = screen_right_side_buy(
+            universe="custom",
+            codes=["600036.SH"],
+            require_volume=True,
+            top=10,
+        )
+        assert out["results"][0]["name"] == "招商银行"
+        assert len(out["results"][0]["sparkline"]) >= 2
+        assert {"date", "close"} <= set(out["results"][0]["sparkline"][-1])
+        assert len(out["results"][0]["bars"]) >= 2
+        assert {"time", "open", "high", "low", "close", "volume"} <= set(
+            out["results"][0]["bars"][-1]
+        )
+
+    def test_sina_name_parser(self, monkeypatch: pytest.MonkeyPatch):
+        from backtest import buy_point_screen as mod
+        import urllib.request as ur
+
+        class _Resp:
+            def read(self):
+                return (
+                    'var hq_str_sz000725="京东方Ａ,6.09,6.05,6.07,6.22,5.88,6.07,6.08,1,1";\n'
+                    'var hq_str_sh600036="招商银行,30.1,30.0,30.2,30.5,29.8,30.2,30.3,1,1";\n'
+                ).encode("gbk")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(ur, "urlopen", lambda *a, **k: _Resp())
+        out = mod._fetch_a_share_names_sina(["000725.SZ", "600036.SH"])
+        assert out["000725.SZ"] == "京东方A"
+        assert out["600036.SH"] == "招商银行"
+
     def test_a_share_small_universe_skips_bulk(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -193,6 +249,7 @@ class TestScreenValidation:
             return {}, False
 
         monkeypatch.setattr(mod, "_fetch_a_share_tushare_bulk", _bulk)
+        monkeypatch.setattr(mod, "_fetch_a_share_ohlcv_sina", lambda *_a, **_k: {})
 
         class _FakeLoader:
             def __init__(self, name: str):
@@ -218,15 +275,16 @@ class TestScreenValidation:
         assert "600036.SH" in out
         assert "tushare_bulk" not in calls
 
-    def test_a_share_large_universe_tries_bulk_first(
+    def test_a_share_large_universe_tries_bulk_after_sina(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         from backtest import buy_point_screen as mod
         import backtest.loaders.registry as reg
 
         frame = _pattern_frame(trailing=0)
-        codes = [f"{i:06d}.SH" for i in range(25)]
+        codes = [f"{i:06d}.SH" for i in range(90)]
 
+        monkeypatch.setattr(mod, "_fetch_a_share_ohlcv_sina", lambda *_a, **_k: {})
         monkeypatch.setattr(
             mod,
             "_fetch_a_share_tushare_bulk",
@@ -238,3 +296,25 @@ class TestScreenValidation:
         out, source = mod._fetch_ohlcv(codes, market="a_share")
         assert source == "tushare_bulk"
         assert codes[0] in out
+
+    def test_sina_kline_parser(self, monkeypatch: pytest.MonkeyPatch):
+        from backtest import buy_point_screen as mod
+        import urllib.request as ur
+
+        class _Resp:
+            def read(self):
+                return (
+                    '[{"day":"2026-07-13","open":"36.81","high":"37.40",'
+                    '"low":"36.71","close":"37.25","volume":"93308476"}]'
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(ur, "urlopen", lambda *a, **k: _Resp())
+        out = mod._fetch_a_share_ohlcv_sina(["600036.SH"], datalen=5)
+        assert "600036.SH" in out
+        assert float(out["600036.SH"].iloc[0]["close"]) == pytest.approx(37.25)

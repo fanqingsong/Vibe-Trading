@@ -1,7 +1,15 @@
-import { useState } from "react";
-import { Percent } from "lucide-react";
+import { Fragment, useState } from "react";
+import { ChevronDown, Percent } from "lucide-react";
+import { Sparkline } from "@/components/charts/Sparkline";
+import { CandlestickChart } from "@/components/charts/CandlestickChart";
+import type { PriceBar } from "@/lib/api";
 
 type Universe = "csi300" | "sp500" | "custom";
+
+interface SparkPoint {
+  date: string;
+  close: number;
+}
 
 interface DividendRow {
   code: string;
@@ -11,6 +19,8 @@ interface DividendRow {
   pb: number | null;
   market_cap: number | null;
   close: number | null;
+  sparkline?: SparkPoint[];
+  bars?: PriceBar[];
 }
 
 interface ScreenResult {
@@ -44,10 +54,12 @@ export function Dividends() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
+  const [expandedCode, setExpandedCode] = useState<string | null>(null);
 
   const runScreen = async () => {
     setError(null);
     setLoading(true);
+    setExpandedCode(null);
     try {
       const params = new URLSearchParams({
         universe,
@@ -86,7 +98,8 @@ export function Dividends() {
           <h1 className="text-2xl font-bold">High Dividend Screen</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Rank equities by trailing dividend yield. A-shares use Tushare dv_ttm
-            (AKShare 分红送配 as free fallback); US uses yfinance.
+            (AKShare 分红送配 as free fallback); US uses yfinance. Click a row to
+            expand the 120-day candlestick chart.
           </p>
         </div>
       </div>
@@ -230,6 +243,7 @@ export function Dividends() {
                     <th className="px-3 py-2 font-medium w-10">#</th>
                     <th className="px-3 py-2 font-medium">Code</th>
                     <th className="px-3 py-2 font-medium">Name</th>
+                    <th className="px-3 py-2 font-medium">Trend (60d)</th>
                     <th className="px-3 py-2 font-medium text-right">Yield %</th>
                     <th className="px-3 py-2 font-medium text-right">PE</th>
                     <th className="px-3 py-2 font-medium text-right">PB</th>
@@ -240,28 +254,78 @@ export function Dividends() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.results.map((row, i) => (
-                    <tr key={row.code} className="border-b last:border-0 hover:bg-muted/20">
-                      <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
-                      <td className="px-3 py-2 font-mono">{row.code}</td>
-                      <td className="px-3 py-2">{row.name || "—"}</td>
-                      <td className="px-3 py-2 text-right font-medium tabular-nums">
-                        {row.dividend_yield.toFixed(2)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {fmt(row.pe)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {fmt(row.pb)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {fmtCap(row.market_cap, data.market_cap_unit)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {fmt(row.close)}
-                      </td>
-                    </tr>
-                  ))}
+                  {data.results.map((row, i) => {
+                    const open = expandedCode === row.code;
+                    return (
+                      <Fragment key={row.code}>
+                        <tr
+                          className={`border-b last:border-0 hover:bg-muted/20 cursor-pointer ${
+                            open ? "bg-muted/30" : ""
+                          }`}
+                          onClick={() => setExpandedCode(open ? null : row.code)}
+                        >
+                          <td className="px-3 py-2 text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                              <ChevronDown
+                                className={`h-3.5 w-3.5 transition-transform ${
+                                  open ? "rotate-180" : ""
+                                }`}
+                              />
+                              {i + 1}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-mono">{row.code}</td>
+                          <td className="px-3 py-2">{row.name || "—"}</td>
+                          <td className="px-3 py-2">
+                            <Sparkline
+                              points={row.sparkline ?? []}
+                              width={128}
+                              height={36}
+                              className="text-muted-foreground"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">
+                            {row.dividend_yield.toFixed(2)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {fmt(row.pe)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {fmt(row.pb)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {fmtCap(row.market_cap, data.market_cap_unit)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {fmt(row.close)}
+                          </td>
+                        </tr>
+                        {open && (
+                          <tr className="border-b bg-muted/10">
+                            <td colSpan={9} className="px-3 py-4">
+                              <div className="flex flex-col gap-2">
+                                <div className="text-xs text-muted-foreground">
+                                  {row.name || row.code} · yield{" "}
+                                  {row.dividend_yield.toFixed(2)}% · 120-day daily
+                                  chart
+                                </div>
+                                {(row.bars?.length ?? 0) < 2 ? (
+                                  <div className="text-sm text-muted-foreground py-8 text-center">
+                                    No bar data available for this symbol.
+                                  </div>
+                                ) : (
+                                  <CandlestickChart
+                                    data={row.bars!}
+                                    height={420}
+                                  />
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
