@@ -1,10 +1,14 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { ChevronDown, Crosshair } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import type { PriceBar, TradeMarker } from "@/lib/api";
 
-type Universe = "csi300" | "sp500" | "custom";
+/** Fixed backend default (not exposed in the form). */
+const PRIOR_HIGH_EXCLUDE = 5;
+const MIN_PULLBACK_DAYS = 3;
+
+const UNIVERSE = "csi300";
 
 interface SparkPoint {
   date: string;
@@ -49,15 +53,7 @@ interface ScreenResult {
   results: BuyPointRow[];
 }
 
-const UNIVERSES: { id: Universe; label: string }[] = [
-  { id: "csi300", label: "CSI 300" },
-  { id: "sp500", label: "S&P 500" },
-  { id: "custom", label: "Custom" },
-];
-
 export function BuyPoints() {
-  const [universe, setUniverse] = useState<Universe>("csi300");
-  const [codes, setCodes] = useState("600036.SH,601288.SH,601398.SH,000001.SZ,600519.SH");
   const [lookback, setLookback] = useState(60);
   const [maxPullback, setMaxPullback] = useState(15);
   const [tolerancePct, setTolerancePct] = useState(2);
@@ -68,6 +64,7 @@ export function BuyPoints() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
+  const [logicOpen, setLogicOpen] = useState(true);
 
   const runScreen = async () => {
     setError(null);
@@ -75,7 +72,7 @@ export function BuyPoints() {
     setExpandedCode(null);
     try {
       const params = new URLSearchParams({
-        universe,
+        universe: UNIVERSE,
         prior_high_lookback: String(lookback),
         max_pullback_days: String(maxPullback),
         hold_tolerance: String(tolerancePct / 100),
@@ -83,9 +80,6 @@ export function BuyPoints() {
         require_volume: String(requireVolume),
         top: String(top),
       });
-      if (universe === "custom") {
-        params.set("codes", codes);
-      }
 
       const result = await request<ScreenResult>(`/buy-points?${params.toString()}`);
       setData(result);
@@ -97,6 +91,12 @@ export function BuyPoints() {
     }
   };
 
+  useEffect(() => {
+    void runScreen();
+    // Auto-load once on enter with default filter values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="flex flex-col gap-6 p-6 max-w-6xl mx-auto">
       <div className="flex items-center gap-3">
@@ -104,50 +104,87 @@ export function BuyPoints() {
         <div>
           <h1 className="text-2xl font-bold">Right-Side Buy Points</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Breakout of prior high, pullback holds, then reclaim — volume confirm
-            on by default. Click a row to expand the 120-day candlestick chart.
-            CSI 300 first run may take ~2 minutes (Tushare by-date bulk); later
-            runs reuse a short cache.
+            CSI 300 右侧买点：突破前高 → 回踩站稳 → 重新站上前高。点击行可展开
+            120 日 K 线。首次筛选约需 2 分钟，之后会复用短时缓存。
           </p>
         </div>
       </div>
 
-      <div className="flex flex-col gap-4 border rounded-lg p-4">
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium">Universe</label>
-          <div className="flex flex-wrap gap-1.5">
-            {UNIVERSES.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => setUniverse(u.id)}
-                className={`px-3 py-1.5 rounded text-sm border transition-colors ${
-                  universe === u.id
-                    ? "bg-primary text-primary-foreground"
-                    : "border-muted-foreground/30 hover:border-primary"
-                }`}
-              >
-                {u.label}
-              </button>
-            ))}
+      <section className="border rounded-lg overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setLogicOpen((v) => !v)}
+          className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/30 transition-colors"
+        >
+          <div>
+            <div className="text-sm font-medium">筛选逻辑说明</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              形态：突破前高 → 回踩不破（容差内）→ 收盘重新站上前高
+            </div>
           </div>
-        </div>
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+              logicOpen ? "rotate-180" : ""
+            }`}
+          />
+        </button>
 
-        {universe === "custom" && (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Tickers</label>
-            <input
-              type="text"
-              value={codes}
-              onChange={(e) => setCodes(e.target.value)}
-              placeholder="600036.SH,601288.SH,AAPL,MSFT"
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Comma-separated. A-shares need .SH/.SZ; US tickers are bare symbols.
-            </p>
+        {logicOpen && (
+          <div className="border-t px-4 py-4 flex flex-col gap-4 text-sm">
+            <ol className="list-decimal list-outside pl-5 space-y-2.5 text-muted-foreground">
+              <li>
+                <span className="text-foreground font-medium">定义前高</span>
+                ：取突破日之前再往前跳过{" "}
+                <span className="text-foreground tabular-nums">{PRIOR_HIGH_EXCLUDE}</span>{" "}
+                个交易日，再往前看{" "}
+                <span className="text-foreground tabular-nums">{lookback}</span>{" "}
+                日（Prior-high lookback）的最高价作为前高。跳过最近几日是为了避免把即将突破的高点算进基准。
+              </li>
+              <li>
+                <span className="text-foreground font-medium">突破</span>
+                ：某日收盘价首次有效站上该前高，记为突破日；可选要求当日成交量 ≥ 近 20 日均量 ×{" "}
+                <span className="text-foreground tabular-nums">1.2</span>
+                （Require volume confirm
+                {requireVolume ? "，当前开启" : "，当前关闭"}）。
+              </li>
+              <li>
+                <span className="text-foreground font-medium">回踩站稳</span>
+                ：突破后第{" "}
+                <span className="text-foreground tabular-nums">{MIN_PULLBACK_DAYS}</span>
+                –{" "}
+                <span className="text-foreground tabular-nums">{maxPullback}</span>{" "}
+                个交易日内（Max pullback days）出现回踩：最低价低于突破日收盘，但始终不低于前高 × (1 −{" "}
+                <span className="text-foreground tabular-nums">{tolerancePct}</span>
+                %)（Hold tolerance），即跌破容差则形态失败。
+              </li>
+              <li>
+                <span className="text-foreground font-medium">右侧确认（买点）</span>
+                ：回踩低点之后，首个收盘重新 ≥ 前高的交易日记为信号日；要求前一日曾试探前高附近（收盘仍低于前高，或最低价触及前高附近），避免把从未回踩的强势续涨误判为买点。
+              </li>
+              <li>
+                <span className="text-foreground font-medium">新鲜度</span>
+                ：只保留信号日落在最近{" "}
+                <span className="text-foreground tabular-nums">{freshness}</span>{" "}
+                个交易日内的结果（Signal freshness）；每只股票取最新且突破幅度更大的一条，再按信号日排序取 Top{" "}
+                <span className="text-foreground tabular-nums">{top}</span>。
+              </li>
+            </ol>
+
+            <div className="rounded-md bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed">
+              <span className="text-foreground font-medium">读表提示：</span>
+              Signal = 右侧确认日；Breakout = 突破日；Prior High / Pullback Low =
+              前高与回踩最低；Breakout % = 突破日相对前高的涨幅；Vol Ratio =
+              突破日量能相对 20 日均量；Days Ago = 信号距今交易日数。展开行可看带
+              Breakout / Buy 标记的 120 日 K 线。
+            </div>
           </div>
         )}
+      </section>
+
+      <div className="flex flex-col gap-4 border rounded-lg p-4">
+        <div className="text-sm text-muted-foreground">
+          Universe: <span className="font-medium text-foreground">CSI 300</span>
+        </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="flex flex-col gap-1.5">
@@ -232,6 +269,12 @@ export function BuyPoints() {
       {error && (
         <div className="text-sm text-danger border border-danger/30 rounded p-3 bg-danger/5">
           {error}
+        </div>
+      )}
+
+      {loading && !data && !error && (
+        <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
+          Screening CSI 300… first run may take ~2 minutes.
         </div>
       )}
 

@@ -1,10 +1,10 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { ChevronDown, Percent } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import type { PriceBar } from "@/lib/api";
 
-type Universe = "csi300" | "sp500" | "custom";
+const UNIVERSE = "csi300";
 
 interface SparkPoint {
   date: string;
@@ -37,15 +37,7 @@ interface ScreenResult {
   results: DividendRow[];
 }
 
-const UNIVERSES: { id: Universe; label: string }[] = [
-  { id: "csi300", label: "CSI 300" },
-  { id: "sp500", label: "S&P 500" },
-  { id: "custom", label: "Custom" },
-];
-
 export function Dividends() {
-  const [universe, setUniverse] = useState<Universe>("csi300");
-  const [codes, setCodes] = useState("600036.SH,601288.SH,601398.SH,601988.SH,600028.SH");
   const [minYield, setMinYield] = useState(3);
   const [maxYield, setMaxYield] = useState<string>("");
   const [minMv, setMinMv] = useState<string>("");
@@ -62,13 +54,10 @@ export function Dividends() {
     setExpandedCode(null);
     try {
       const params = new URLSearchParams({
-        universe,
+        universe: UNIVERSE,
         min_yield: String(minYield),
         top: String(top),
       });
-      if (universe === "custom") {
-        params.set("codes", codes);
-      }
       if (maxYield.trim()) params.set("max_yield", maxYield.trim());
       if (minMv.trim()) params.set("min_market_cap", minMv.trim());
       if (maxPe.trim()) params.set("max_pe", maxPe.trim());
@@ -83,12 +72,11 @@ export function Dividends() {
     }
   };
 
-  const mvLabel =
-    universe === "sp500"
-      ? "Min market cap (USD)"
-      : universe === "csi300"
-        ? "Min market cap (亿元)"
-        : "Min market cap (亿元 / USD)";
+  useEffect(() => {
+    void runScreen();
+    // Auto-load once on enter with default filter values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-6xl mx-auto">
@@ -97,49 +85,17 @@ export function Dividends() {
         <div>
           <h1 className="text-2xl font-bold">High Dividend Screen</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Rank equities by trailing dividend yield. A-shares use Tushare dv_ttm
-            (AKShare 分红送配 as free fallback); US uses yfinance. Click a row to
-            expand the 120-day candlestick chart.
+            Rank CSI 300 equities by trailing dividend yield (Tushare dv_ttm,
+            AKShare 分红送配 as free fallback). Click a row to expand the
+            120-day candlestick chart.
           </p>
         </div>
       </div>
 
       <div className="flex flex-col gap-4 border rounded-lg p-4">
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium">Universe</label>
-          <div className="flex flex-wrap gap-1.5">
-            {UNIVERSES.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => setUniverse(u.id)}
-                className={`px-3 py-1.5 rounded text-sm border transition-colors ${
-                  universe === u.id
-                    ? "bg-primary text-primary-foreground"
-                    : "border-muted-foreground/30 hover:border-primary"
-                }`}
-              >
-                {u.label}
-              </button>
-            ))}
-          </div>
+        <div className="text-sm text-muted-foreground">
+          Universe: <span className="font-medium text-foreground">CSI 300</span>
         </div>
-
-        {universe === "custom" && (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Tickers</label>
-            <input
-              type="text"
-              value={codes}
-              onChange={(e) => setCodes(e.target.value)}
-              placeholder="600036.SH,601288.SH,XOM,JNJ"
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Comma-separated. A-shares need .SH/.SZ; US tickers are bare symbols.
-            </p>
-          </div>
-        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="flex flex-col gap-1.5">
@@ -166,7 +122,7 @@ export function Dividends() {
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">{mvLabel}</label>
+            <label className="text-sm font-medium">Min market cap (亿元)</label>
             <input
               type="number"
               min={0}
@@ -218,6 +174,12 @@ export function Dividends() {
         </div>
       )}
 
+      {loading && !data && !error && (
+        <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
+          Screening CSI 300…
+        </div>
+      )}
+
       {data && (
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -226,9 +188,7 @@ export function Dividends() {
               {data.count}
             </span>
             <span>Source: {data.source}</span>
-            <span>
-              Cap unit: {data.market_cap_unit === "CNY_yi" ? "亿元" : "USD"}
-            </span>
+            <span>Cap unit: 亿元</span>
           </div>
 
           {data.results.length === 0 ? (
@@ -247,9 +207,7 @@ export function Dividends() {
                     <th className="px-3 py-2 font-medium text-right">Yield %</th>
                     <th className="px-3 py-2 font-medium text-right">PE</th>
                     <th className="px-3 py-2 font-medium text-right">PB</th>
-                    <th className="px-3 py-2 font-medium text-right">
-                      Mkt Cap ({data.market_cap_unit === "CNY_yi" ? "亿元" : "USD"})
-                    </th>
+                    <th className="px-3 py-2 font-medium text-right">Mkt Cap (亿元)</th>
                     <th className="px-3 py-2 font-medium text-right">Close</th>
                   </tr>
                 </thead>
@@ -294,7 +252,7 @@ export function Dividends() {
                             {fmt(row.pb)}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums">
-                            {fmtCap(row.market_cap, data.market_cap_unit)}
+                            {fmtCap(row.market_cap)}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums">
                             {fmt(row.close)}
@@ -341,14 +299,8 @@ function fmt(v: number | null): string {
   return v.toFixed(2);
 }
 
-function fmtCap(v: number | null, unit: string): string {
+function fmtCap(v: number | null): string {
   if (v == null || Number.isNaN(v)) return "—";
-  if (unit === "USD") {
-    if (v >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
-    if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-    if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-    return v.toLocaleString();
-  }
   return v.toFixed(1);
 }
 
