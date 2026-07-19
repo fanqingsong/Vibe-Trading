@@ -626,11 +626,16 @@ def _fetch_ohlcv(
     codes: list[str],
     *,
     market: Literal["a_share", "us_equity"],
+    calendar_pad_days: int | None = None,
+    sina_datalen: int | None = None,
 ) -> tuple[dict[str, pd.DataFrame], str]:
     """Fetch daily OHLCV for many tickers; returns (code→df, source label).
 
     A-share screens prefer Tushare ``daily(trade_date=…)`` bulk pulls so a
     CSI300 scan costs ~N trading-day calls instead of 300 per-code calls.
+
+    ``calendar_pad_days`` / ``sina_datalen`` override the module defaults so
+    longer-history screens (e.g. Chanlun) can reuse the same fetch path.
     """
     import time
 
@@ -638,8 +643,11 @@ def _fetch_ohlcv(
 
     _ensure_registered()
 
+    pad_days = _CALENDAR_PAD_DAYS if calendar_pad_days is None else int(calendar_pad_days)
+    sina_len = _SINA_KLINE_DATALEN if sina_datalen is None else int(sina_datalen)
+
     end = datetime.now()
-    start = end - timedelta(days=_CALENDAR_PAD_DAYS)
+    start = end - timedelta(days=pad_days)
     start_date = start.strftime("%Y-%m-%d")
     end_date = end.strftime("%Y-%m-%d")
     fields = None  # do not request daily_basic extras (burns Tushare quota)
@@ -670,7 +678,7 @@ def _fetch_ohlcv(
         if source_name == "sina":
             if market != "a_share":
                 continue
-            got = _fetch_a_share_ohlcv_sina(remaining, datalen=_SINA_KLINE_DATALEN)
+            got = _fetch_a_share_ohlcv_sina(remaining, datalen=sina_len)
         elif source_name == "tushare_bulk":
             got, aborted = _fetch_a_share_tushare_bulk(
                 remaining, start_date=start_date, end_date=end_date

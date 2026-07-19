@@ -49,6 +49,8 @@ export default defineConfig(({ mode }) => {
         // Same SPA/API split: browser navigation to ``/buy-points`` gets
         // index.html; XHR/fetch with query params proxies to the screener.
         "/buy-points": apiProxyWithHtmlFallback,
+        // Same SPA/API split for the Chanlun (缠论) buy-point screen.
+        "/chanlun": apiProxyWithHtmlFallback,
         // The browser navigates to the ``/settings`` SPA page, while every
         // ``/settings/*`` API call must reach the backend. Route the whole
         // prefix through the HTML-fallback proxy so only the bare page path

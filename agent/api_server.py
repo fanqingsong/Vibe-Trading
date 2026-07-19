@@ -593,7 +593,7 @@ app.add_middleware(
 
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _SPA_HTML_EXACT_PATHS: frozenset[str] = frozenset(
-    {"/correlation", "/dividends", "/buy-points"}
+    {"/correlation", "/dividends", "/buy-points", "/chanlun"}
 )
 # Each regex matches a complete request path. Trailing slash optional.
 _SPA_HTML_PATH_REGEX: tuple[re.Pattern[str], ...] = (
@@ -619,7 +619,8 @@ async def _spa_html_deep_link_fallback(request: Request, call_next):
 
     Conflicts: ``/runs/{id}`` (RunDetail page vs API), ``/correlation``
     (Correlation page vs API), ``/dividends`` (Dividend screen page vs
-    API), and ``/buy-points`` (Buy-points screen page vs API).
+    API), ``/buy-points`` (Buy-points screen page vs API), and
+    ``/chanlun`` (Chanlun screen page vs API).
     Programmatic clients (``Accept: */*`` or ``application/json``)
     still hit the real API handler.
     """
@@ -1889,6 +1890,77 @@ async def screen_buy_points(
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Buy-point screen failed: {exc}")
+
+
+@app.get("/chanlun")
+async def screen_chanlun(
+    universe: str = Query(
+        "csi300",
+        description="Stock universe: csi300 | sp500 | custom",
+    ),
+    codes: str | None = Query(
+        None,
+        description="Comma-separated tickers (required when universe=custom)",
+    ),
+    buy_type: str = Query(
+        "buy3",
+        description="Chanlun buy point: buy1 | buy2 | buy3",
+    ),
+    signal_freshness: int = Query(
+        10,
+        description="Only return signals whose onset bar is within N sessions",
+        ge=1,
+        le=60,
+    ),
+    ma_period: int = Query(
+        34,
+        description="SMA period used by czsc second/third buy helpers",
+        ge=2,
+        le=120,
+    ),
+    top: int = Query(50, description="Max rows to return", ge=1, le=500),
+):
+    """Screen equities for Chanlun buy points (czsc: 一买 / 二买 / 三买)."""
+    from backtest.chanlun_screen import screen_chanlun_buy
+
+    universe_key = universe.strip().lower()
+    if universe_key not in ("csi300", "sp500", "custom"):
+        raise HTTPException(
+            status_code=400,
+            detail="universe must be one of: csi300, sp500, custom",
+        )
+
+    buy_key = buy_type.strip().lower()
+    if buy_key not in ("buy1", "buy2", "buy3"):
+        raise HTTPException(
+            status_code=400,
+            detail="buy_type must be one of: buy1, buy2, buy3",
+        )
+
+    code_list: list[str] | None = None
+    if codes:
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        if len(code_list) > 500:
+            raise HTTPException(status_code=400, detail="Maximum 500 codes per request")
+    if universe_key == "custom" and not code_list:
+        raise HTTPException(status_code=400, detail="codes required when universe=custom")
+
+    try:
+        return await asyncio.to_thread(
+            screen_chanlun_buy,
+            universe=universe_key,  # type: ignore[arg-type]
+            codes=code_list,
+            buy_type=buy_key,  # type: ignore[arg-type]
+            signal_freshness=signal_freshness,
+            ma_period=ma_period,
+            top=top,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Chanlun screen failed: {exc}")
 
 
 def _terminate_current_process() -> None:

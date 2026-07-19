@@ -1,33 +1,49 @@
 import { Fragment, useEffect, useState } from "react";
-import { ChevronDown, Crosshair } from "lucide-react";
+import { ChevronDown, GitBranch } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import type { PriceBar, TradeMarker } from "@/lib/api";
 
-/** Fixed backend default (not exposed in the form). */
-const PRIOR_HIGH_EXCLUDE = 5;
-const MIN_PULLBACK_DAYS = 3;
-
 const UNIVERSE = "csi300";
+
+type BuyType = "buy1" | "buy2" | "buy3";
+
+const BUY_OPTIONS: { value: BuyType; label: string; blurb: string }[] = [
+  {
+    value: "buy3",
+    label: "三买",
+    blurb: "突破中枢 ZG 后回调不进中枢（最接近右侧买点）",
+  },
+  {
+    value: "buy2",
+    label: "二买",
+    blurb: "一买后反弹再回调，回调不破前低",
+  },
+  {
+    value: "buy1",
+    label: "一买",
+    blurb: "下跌趋势末段背驰 + 底分型",
+  },
+];
 
 interface SparkPoint {
   date: string;
   close: number;
 }
 
-interface BuyPointRow {
+interface ChanlunRow {
   code: string;
   name: string;
   signal_date: string;
-  breakout_date: string;
-  prior_high: number;
-  pullback_low: number;
-  breakout_close: number;
+  buy_type: BuyType;
+  buy_label: string;
+  signal_detail: string;
   close: number;
-  breakout_pct: number;
-  volume_ratio: number | null;
+  zg: number | null;
+  zd: number | null;
+  bi_high: number | null;
+  bi_low: number | null;
   days_since_signal: number;
-  days_after_breakout: number;
   sparkline?: SparkPoint[];
   bars?: PriceBar[];
 }
@@ -36,57 +52,56 @@ interface ScreenResult {
   universe: string;
   market: string;
   trade_date: string;
-  prior_high_lookback: number;
-  prior_high_exclude: number;
-  min_pullback_days: number;
-  max_pullback_days: number;
-  hold_tolerance: number;
+  buy_type: BuyType;
+  buy_label: string;
   signal_freshness: number;
-  require_volume: boolean;
-  volume_mult: number;
+  ma_period: number;
   universe_size: number;
   fetched: number;
   matched: number;
   count: number;
   source: string;
   warning?: string | null;
-  results: BuyPointRow[];
+  results: ChanlunRow[];
 }
 
-export function BuyPoints() {
-  const [lookback, setLookback] = useState(60);
-  const [maxPullback, setMaxPullback] = useState(15);
-  const [tolerancePct, setTolerancePct] = useState(2);
+export function Chanlun() {
+  const [buyType, setBuyType] = useState<BuyType>("buy3");
   const [freshness, setFreshness] = useState(10);
-  const [requireVolume, setRequireVolume] = useState(true);
+  const [maPeriod, setMaPeriod] = useState(34);
   const [top, setTop] = useState(50);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [logicOpen, setLogicOpen] = useState(true);
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   const runScreen = async () => {
     setError(null);
     setLoading(true);
     setExpandedCode(null);
+    setElapsedSec(0);
+    const started = Date.now();
+    const tick = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
     try {
       const params = new URLSearchParams({
         universe: UNIVERSE,
-        prior_high_lookback: String(lookback),
-        max_pullback_days: String(maxPullback),
-        hold_tolerance: String(tolerancePct / 100),
+        buy_type: buyType,
         signal_freshness: String(freshness),
-        require_volume: String(requireVolume),
+        ma_period: String(maPeriod),
         top: String(top),
       });
 
-      const result = await request<ScreenResult>(`/buy-points?${params.toString()}`);
+      const result = await request<ScreenResult>(`/chanlun?${params.toString()}`);
       setData(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Buy-point screen failed");
+      setError(e instanceof Error ? e.message : "Chanlun screen failed");
       setData(null);
     } finally {
+      window.clearInterval(tick);
       setLoading(false);
     }
   };
@@ -97,16 +112,18 @@ export function BuyPoints() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const selected = BUY_OPTIONS.find((o) => o.value === buyType)!;
+
   return (
     <div className="flex flex-col gap-6 p-6 max-w-6xl mx-auto">
       <div className="flex items-center gap-3">
-        <Crosshair className="h-6 w-6 text-primary" />
+        <GitBranch className="h-6 w-6 text-primary" />
         <div>
-          <h1 className="text-2xl font-bold">Right-Side Buy Points</h1>
+          <h1 className="text-2xl font-bold">Chanlun Buy Points</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            CSI 300 screen: breakout of prior high → pullback that holds → close
-            reclaim of prior high. Click a row to expand the 120-day daily chart.
-            First run may take ~2 minutes; later runs reuse a short-lived cache.
+            CSI 300 screen via czsc: fractal → bi → zhongshu → 一买 / 二买 / 三买.
+            Click a row to expand the 120-day daily chart. First run may take a few
+            minutes; later runs reuse the short-lived OHLCV cache.
           </p>
         </div>
       </div>
@@ -120,8 +137,7 @@ export function BuyPoints() {
           <div>
             <div className="text-sm font-medium">Screening logic</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              Pattern: breakout → pullback holds (within tolerance) → close back
-              above prior high
+              Selected: {selected.label} — {selected.blurb}
             </div>
           </div>
           <ChevronDown
@@ -135,54 +151,38 @@ export function BuyPoints() {
           <div className="border-t px-4 py-4 flex flex-col gap-5 text-sm">
             <ol className="list-decimal list-outside pl-5 space-y-2.5 text-muted-foreground">
               <li>
-                <span className="text-foreground font-medium">Prior high</span>
-                : skip the{" "}
-                <span className="text-foreground tabular-nums">{PRIOR_HIGH_EXCLUDE}</span>{" "}
-                sessions immediately before the breakout bar, then take the max
-                high over the previous{" "}
-                <span className="text-foreground tabular-nums">{lookback}</span>{" "}
-                sessions (Prior-high lookback). Skipping recent bars keeps
-                near-breakout highs out of the baseline.
+                <span className="text-foreground font-medium">Structure</span>
+                : daily bars are processed by{" "}
+                <span className="text-foreground">czsc</span> — inclusion
+                handling → fractals → bi → zhongshu (ZG / ZD).
               </li>
               <li>
-                <span className="text-foreground font-medium">Breakout</span>
-                : a session whose close is above that prior high is the
-                breakout day. Optionally require breakout volume ≥ 20-day average
-                ×{" "}
-                <span className="text-foreground tabular-nums">1.2</span>
-                {" "}
-                (Require volume confirm — currently{" "}
-                {requireVolume ? "on" : "off"}).
+                <span className="text-foreground font-medium">一买</span>
+                : downtrend with ≥2 pivots, final decline shows divergence
+                (背驰), confirmed by a bottom fractal (
+                <code className="text-xs">cxt_first_buy_V221126</code>).
               </li>
               <li>
-                <span className="text-foreground font-medium">Pullback holds</span>
-                : within{" "}
-                <span className="text-foreground tabular-nums">{MIN_PULLBACK_DAYS}</span>
-                –{" "}
-                <span className="text-foreground tabular-nums">{maxPullback}</span>{" "}
-                sessions after breakout (Max pullback days), price must pull
-                back: the low dips below the breakout close, but never below
-                prior high × (1 −{" "}
-                <span className="text-foreground tabular-nums">{tolerancePct}</span>
-                %) (Hold tolerance). Breaking that floor fails the pattern.
+                <span className="text-foreground font-medium">二买</span>
+                : after a first-buy style bounce, pullback that does not break
+                the prior low, with SMA assist (
+                <code className="text-xs">cxt_second_bs_V230320</code>).
               </li>
               <li>
-                <span className="text-foreground font-medium">
-                  Right-side confirm (buy point)
-                </span>
-                : after the pullback trough, the first session that closes back
-                ≥ prior high is the signal day. The prior session must have
-                probed near the prior high (close still below it, or low
-                touching near it), so a straight run-up without a pullback is
-                not counted.
+                <span className="text-foreground font-medium">三买</span>
+                : leave the zhongshu above ZG, pullback that stays above ZG
+                (does not re-enter), with SMA assist (
+                <code className="text-xs">cxt_third_bs_V230319</code> +{" "}
+                <code className="text-xs">cxt_third_buy_V230228</code>). Closest
+                to the right-side buy-point idea.
               </li>
               <li>
                 <span className="text-foreground font-medium">Freshness</span>
-                : keep only signals whose signal day falls in the last{" "}
+                : keep only the latest{" "}
+                <span className="text-foreground font-medium">onset</span> of
+                the selected buy type within the last{" "}
                 <span className="text-foreground tabular-nums">{freshness}</span>{" "}
-                sessions (Signal freshness). Per name, keep the newest signal
-                (tie-break: larger breakout %), then sort by signal date and
-                take Top{" "}
+                sessions, then take Top{" "}
                 <span className="text-foreground tabular-nums">{top}</span>.
               </li>
             </ol>
@@ -204,74 +204,51 @@ export function BuyPoints() {
                   <dt className="inline font-medium text-foreground">Trend (60d)</dt>
                   <dd className="inline">
                     {" "}
-                    — mini close path (~60 sessions); dashed line marks prior
-                    high; thicker point marks the signal day.
+                    — mini close path; dashed line marks ZG when available;
+                    thicker point marks the signal day.
                   </dd>
+                </div>
+                <div>
+                  <dt className="inline font-medium text-foreground">Type</dt>
+                  <dd className="inline"> — 一买 / 二买 / 三买.</dd>
                 </div>
                 <div>
                   <dt className="inline font-medium text-foreground">Signal</dt>
                   <dd className="inline">
                     {" "}
-                    — right-side confirm date (close reclaim of prior high);
-                    this is the buy-point day.
+                    — onset date when the czsc buy label first fired.
                   </dd>
                 </div>
                 <div>
-                  <dt className="inline font-medium text-foreground">Breakout</dt>
+                  <dt className="inline font-medium text-foreground">ZG / ZD</dt>
                   <dd className="inline">
                     {" "}
-                    — date when close first cleared the prior high.
-                  </dd>
-                </div>
-                <div>
-                  <dt className="inline font-medium text-foreground">Prior High</dt>
-                  <dd className="inline">
-                    {" "}
-                    — reference high used for breakout / reclaim.
-                  </dd>
-                </div>
-                <div>
-                  <dt className="inline font-medium text-foreground">Pullback Low</dt>
-                  <dd className="inline">
-                    {" "}
-                    — lowest low between breakout and signal; must stay above
-                    the hold-tolerance floor.
+                    — latest valid zhongshu high / low (— if none).
                   </dd>
                 </div>
                 <div>
                   <dt className="inline font-medium text-foreground">Close</dt>
-                  <dd className="inline">
-                    {" "}
-                    — closing price on the signal day.
-                  </dd>
-                </div>
-                <div>
-                  <dt className="inline font-medium text-foreground">Breakout %</dt>
-                  <dd className="inline">
-                    {" "}
-                    — (breakout close − prior high) / prior high × 100.
-                  </dd>
-                </div>
-                <div>
-                  <dt className="inline font-medium text-foreground">Vol Ratio</dt>
-                  <dd className="inline">
-                    {" "}
-                    — breakout volume ÷ 20-day average volume (— if unavailable).
-                  </dd>
+                  <dd className="inline"> — closing price on the signal day.</dd>
                 </div>
                 <div>
                   <dt className="inline font-medium text-foreground">Days Ago</dt>
                   <dd className="inline">
                     {" "}
-                    — trading sessions since the signal day (0 = today / latest
-                    bar).
+                    — trading sessions since the signal day.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="inline font-medium text-foreground">Detail</dt>
+                  <dd className="inline">
+                    {" "}
+                    — raw czsc signal string (e.g. 三买_均线新高).
                   </dd>
                 </div>
                 <div>
                   <dt className="inline font-medium text-foreground">Expanded chart</dt>
                   <dd className="inline">
                     {" "}
-                    — 120-day daily candles with Breakout / Buy markers.
+                    — 120-day daily candles with a Buy marker on the signal day.
                   </dd>
                 </div>
               </dl>
@@ -285,50 +262,22 @@ export function BuyPoints() {
           Universe: <span className="font-medium text-foreground">CSI 300</span>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Prior-high lookback</label>
-            <input
-              type="number"
-              min={10}
-              max={250}
-              value={lookback}
-              onChange={(e) => setLookback(Number(e.target.value))}
+            <label className="text-sm font-medium">Buy type</label>
+            <select
+              value={buyType}
+              onChange={(e) => setBuyType(e.target.value as BuyType)}
               className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-            />
+            >
+              {BUY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
             <p className="text-[11px] text-muted-foreground leading-snug">
-              Sessions used to measure the prior high (after skipping{" "}
-              {PRIOR_HIGH_EXCLUDE} bars before breakout).
-            </p>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Max pullback days</label>
-            <input
-              type="number"
-              min={3}
-              max={60}
-              value={maxPullback}
-              onChange={(e) => setMaxPullback(Number(e.target.value))}
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-            />
-            <p className="text-[11px] text-muted-foreground leading-snug">
-              Signal must arrive within {MIN_PULLBACK_DAYS}–this many sessions
-              after breakout.
-            </p>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">Hold tolerance (%)</label>
-            <input
-              type="number"
-              min={0}
-              max={20}
-              step={0.5}
-              value={tolerancePct}
-              onChange={(e) => setTolerancePct(Number(e.target.value))}
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-            />
-            <p className="text-[11px] text-muted-foreground leading-snug">
-              Max % the pullback low may fall below the prior high.
+              {selected.blurb}
             </p>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -336,13 +285,27 @@ export function BuyPoints() {
             <input
               type="number"
               min={1}
-              max={30}
+              max={60}
               value={freshness}
               onChange={(e) => setFreshness(Number(e.target.value))}
               className="w-full px-3 py-2 rounded-md border bg-background text-sm"
             />
             <p className="text-[11px] text-muted-foreground leading-snug">
-              Only include signals from the last N trading sessions.
+              Only include buy onsets from the last N trading sessions.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium">SMA period</label>
+            <input
+              type="number"
+              min={2}
+              max={120}
+              value={maPeriod}
+              onChange={(e) => setMaPeriod(Number(e.target.value))}
+              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
+            />
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              Used by czsc 二买 / 三买 SMA helpers (default 34 for 三买).
             </p>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -362,15 +325,6 @@ export function BuyPoints() {
         </div>
 
         <div className="flex flex-wrap items-end gap-4">
-          <label className="flex items-center gap-2 text-sm cursor-pointer select-none pb-2">
-            <input
-              type="checkbox"
-              checked={requireVolume}
-              onChange={(e) => setRequireVolume(e.target.checked)}
-              className="rounded border"
-            />
-            Require volume confirm (breakout ≥ 1.2× 20-day avg)
-          </label>
           <button
             type="button"
             onClick={runScreen}
@@ -388,13 +342,16 @@ export function BuyPoints() {
         </div>
       )}
 
-      {loading && !data && !error && (
+      {loading && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
-          Screening CSI 300… first run may take ~2 minutes.
+          Screening CSI 300 for {selected.label}… {elapsedSec}s elapsed.
+          {elapsedSec < 20
+            ? " Fetching daily bars…"
+            : " Running czsc on each name — usually finishes within ~1 minute."}
         </div>
       )}
 
-      {data && (
+      {data && !loading && (
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>
@@ -403,7 +360,8 @@ export function BuyPoints() {
             </span>
             <span>Source: {data.source}</span>
             <span>
-              Volume {data.require_volume ? `on ×${data.volume_mult}` : "off"}
+              {data.buy_label} · freshness {data.signal_freshness} · SMA{" "}
+              {data.ma_period}
             </span>
           </div>
 
@@ -415,9 +373,9 @@ export function BuyPoints() {
 
           {data.results.length === 0 ? (
             <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
-              No names passed the current filters. Try unchecking volume confirm,
-              raising signal freshness, or wait ~1 minute if Tushare rate-limited
-              the previous CSI 300 pull.
+              No names passed the current filters. Try another buy type, raise
+              signal freshness, or wait if the previous CSI 300 pull was
+              rate-limited.
             </div>
           ) : (
             <div className="border rounded-lg overflow-x-auto">
@@ -428,14 +386,13 @@ export function BuyPoints() {
                     <th className="px-3 py-2 font-medium">Code</th>
                     <th className="px-3 py-2 font-medium">Name</th>
                     <th className="px-3 py-2 font-medium">Trend (60d)</th>
+                    <th className="px-3 py-2 font-medium">Type</th>
                     <th className="px-3 py-2 font-medium">Signal</th>
-                    <th className="px-3 py-2 font-medium">Breakout</th>
-                    <th className="px-3 py-2 font-medium text-right">Prior High</th>
-                    <th className="px-3 py-2 font-medium text-right">Pullback Low</th>
+                    <th className="px-3 py-2 font-medium text-right">ZG</th>
+                    <th className="px-3 py-2 font-medium text-right">ZD</th>
                     <th className="px-3 py-2 font-medium text-right">Close</th>
-                    <th className="px-3 py-2 font-medium text-right">Breakout %</th>
-                    <th className="px-3 py-2 font-medium text-right">Vol Ratio</th>
                     <th className="px-3 py-2 font-medium text-right">Days Ago</th>
+                    <th className="px-3 py-2 font-medium">Detail</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -466,35 +423,43 @@ export function BuyPoints() {
                           <td className="px-3 py-2">
                             <Sparkline
                               points={row.sparkline ?? []}
-                              priorHigh={row.prior_high}
+                              priorHigh={row.zg ?? undefined}
                               signalDate={row.signal_date}
                               width={128}
                               height={36}
                               className="text-muted-foreground"
                             />
                           </td>
+                          <td className="px-3 py-2">{row.buy_label}</td>
                           <td className="px-3 py-2 tabular-nums">{row.signal_date}</td>
-                          <td className="px-3 py-2 tabular-nums">{row.breakout_date}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.prior_high)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.pullback_low)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.close)}</td>
-                          <td className="px-3 py-2 text-right font-medium tabular-nums">
-                            {fmt(row.breakout_pct)}
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {fmt(row.zg)}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums">
-                            {row.volume_ratio == null ? "—" : row.volume_ratio.toFixed(2)}
+                            {fmt(row.zd)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {fmt(row.close)}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums">
                             {row.days_since_signal}
                           </td>
+                          <td
+                            className="px-3 py-2 text-xs text-muted-foreground max-w-[12rem] truncate"
+                            title={row.signal_detail}
+                          >
+                            {row.signal_detail || "—"}
+                          </td>
                         </tr>
                         {open && (
                           <tr className="border-b bg-muted/10">
-                            <td colSpan={12} className="px-3 py-4">
+                            <td colSpan={11} className="px-3 py-4">
                               <div className="flex flex-col gap-2">
                                 <div className="text-xs text-muted-foreground">
                                   {row.name || row.code} · 120-day daily chart ·
-                                  markers: breakout / right-side buy
+                                  marker: {row.buy_label}
+                                  {row.zg != null ? ` · ZG ${fmt(row.zg)}` : ""}
+                                  {row.zd != null ? ` · ZD ${fmt(row.zd)}` : ""}
                                 </div>
                                 {(row.bars?.length ?? 0) < 2 ? (
                                   <div className="text-sm text-muted-foreground py-8 text-center">
@@ -529,31 +494,19 @@ function fmt(v: number | null | undefined): string {
   return v.toFixed(2);
 }
 
-function chartMarkers(row: BuyPointRow): TradeMarker[] {
-  const markers: TradeMarker[] = [];
-  const breakoutBar = row.bars?.find((b) => b.time === row.breakout_date);
+function chartMarkers(row: ChanlunRow): TradeMarker[] {
   const signalBar = row.bars?.find((b) => b.time === row.signal_date);
-  if (breakoutBar) {
-    markers.push({
-      time: row.breakout_date,
-      code: row.code,
-      side: "BUY",
-      price: breakoutBar.close,
-      reason: "Breakout",
-      text: "Breakout",
-    });
-  }
-  if (signalBar) {
-    markers.push({
+  if (!signalBar) return [];
+  return [
+    {
       time: row.signal_date,
       code: row.code,
       side: "BUY",
       price: signalBar.close,
-      reason: "Right-side buy",
-      text: "Buy",
-    });
-  }
-  return markers;
+      reason: row.buy_label,
+      text: row.buy_label,
+    },
+  ];
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {

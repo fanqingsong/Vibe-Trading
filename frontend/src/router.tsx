@@ -24,6 +24,9 @@ const Dividends = lazy(() =>
 const BuyPoints = lazy(() =>
   import("@/pages/BuyPoints").then((m) => ({ default: m.BuyPoints })),
 );
+const Chanlun = lazy(() =>
+  import("@/pages/Chanlun").then((m) => ({ default: m.Chanlun })),
+);
 const AlphaZoo = lazy(() =>
   import("@/pages/AlphaZoo").then((m) => ({ default: m.AlphaZoo })),
 );
@@ -83,6 +86,7 @@ export const router = createBrowserRouter([
       { path: "/correlation", element: wrap(Correlation) },
       { path: "/dividends", element: wrap(Dividends) },
       { path: "/buy-points", element: wrap(BuyPoints) },
+      { path: "/chanlun", element: wrap(Chanlun) },
       { path: "/alpha-zoo", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/bench", element: wrap(AlphaZoo) },
       { path: "/alpha-zoo/compare", element: wrap(AlphaZoo) },
