@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
-import { ChevronDown, Crosshair } from "lucide-react";
+import { ChevronDown, Crosshair, Mail } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
-import type { PriceBar, TradeMarker } from "@/lib/api";
+import { api, type PriceBar, type TradeMarker } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
 
 /** Fixed backend default (not exposed in the form). */
 const PRIOR_HIGH_EXCLUDE = 5;
@@ -54,6 +55,7 @@ interface ScreenResult {
 }
 
 export function BuyPoints() {
+  const authUser = useAuthStore((s) => s.user);
   const [lookback, setLookback] = useState(60);
   const [maxPullback, setMaxPullback] = useState(15);
   const [tolerancePct, setTolerancePct] = useState(2);
@@ -61,13 +63,16 @@ export function BuyPoints() {
   const [requireVolume, setRequireVolume] = useState(true);
   const [top, setTop] = useState(50);
   const [loading, setLoading] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [logicOpen, setLogicOpen] = useState(true);
 
   const runScreen = async () => {
     setError(null);
+    setEmailStatus(null);
     setLoading(true);
     setExpandedCode(null);
     try {
@@ -88,6 +93,57 @@ export function BuyPoints() {
       setData(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const sendEmail = async () => {
+    if (!data || data.results.length === 0) return;
+    setEmailStatus(null);
+    setError(null);
+    setEmailing(true);
+    try {
+      const result = await api.emailBuyPoints({
+        universe: data.universe,
+        market: data.market,
+        trade_date: data.trade_date,
+        prior_high_lookback: data.prior_high_lookback,
+        prior_high_exclude: data.prior_high_exclude,
+        min_pullback_days: data.min_pullback_days,
+        max_pullback_days: data.max_pullback_days,
+        hold_tolerance: data.hold_tolerance,
+        signal_freshness: data.signal_freshness,
+        require_volume: data.require_volume,
+        volume_mult: data.volume_mult,
+        universe_size: data.universe_size,
+        fetched: data.fetched,
+        matched: data.matched,
+        count: data.count,
+        source: data.source,
+        results: data.results.map((row) => ({
+          code: row.code,
+          name: row.name,
+          signal_date: row.signal_date,
+          breakout_date: row.breakout_date,
+          prior_high: row.prior_high,
+          pullback_low: row.pullback_low,
+          breakout_close: row.breakout_close,
+          close: row.close,
+          breakout_pct: row.breakout_pct,
+          volume_ratio: row.volume_ratio,
+          days_since_signal: row.days_since_signal,
+          days_after_breakout: row.days_after_breakout,
+        })),
+      });
+      if (result.ok) {
+        const to = result.recipients.join(", ") || authUser?.email || "your inbox";
+        setEmailStatus(`Sent to ${to}`);
+      } else {
+        setError(result.message || "Failed to send email");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to send email");
+    } finally {
+      setEmailing(false);
     }
   };
 
@@ -388,6 +444,12 @@ export function BuyPoints() {
         </div>
       )}
 
+      {emailStatus && (
+        <div className="text-sm text-foreground border border-border rounded p-3 bg-muted/30">
+          {emailStatus}
+        </div>
+      )}
+
       {loading && !data && !error && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
           Screening CSI 300… first run may take ~2 minutes.
@@ -396,15 +458,31 @@ export function BuyPoints() {
 
       {data && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>
-              Date {data.trade_date || "—"} · {data.matched}/{data.fetched} matched
-              (universe {data.universe_size}) · showing {data.count}
-            </span>
-            <span>Source: {data.source}</span>
-            <span>
-              Volume {data.require_volume ? `on ×${data.volume_mult}` : "off"}
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                Date {data.trade_date || "—"} · {data.matched}/{data.fetched} matched
+                (universe {data.universe_size}) · showing {data.count}
+              </span>
+              <span>Source: {data.source}</span>
+              <span>
+                Volume {data.require_volume ? `on ×${data.volume_mult}` : "off"}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={sendEmail}
+              disabled={emailing || loading || data.results.length === 0}
+              title={
+                authUser?.email
+                  ? `Send results to ${authUser.email}`
+                  : "Send results to your account email"
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border bg-background text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              {emailing ? "Sending…" : "Email results"}
+            </button>
           </div>
 
           {data.warning && (

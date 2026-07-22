@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
-import { ChevronDown, Percent } from "lucide-react";
+import { ChevronDown, Mail, Percent } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
-import type { PriceBar } from "@/lib/api";
+import { api, type PriceBar } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
 
 const UNIVERSE = "csi300";
 
@@ -38,18 +39,22 @@ interface ScreenResult {
 }
 
 export function Dividends() {
+  const authUser = useAuthStore((s) => s.user);
   const [minYield, setMinYield] = useState(3);
   const [maxYield, setMaxYield] = useState<string>("");
   const [minMv, setMinMv] = useState<string>("");
   const [maxPe, setMaxPe] = useState<string>("");
   const [top, setTop] = useState(50);
   const [loading, setLoading] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
 
   const runScreen = async () => {
     setError(null);
+    setEmailStatus(null);
     setLoading(true);
     setExpandedCode(null);
     try {
@@ -69,6 +74,46 @@ export function Dividends() {
       setData(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const sendEmail = async () => {
+    if (!data || data.results.length === 0) return;
+    setEmailStatus(null);
+    setError(null);
+    setEmailing(true);
+    try {
+      const result = await api.emailDividends({
+        universe: data.universe,
+        market: data.market,
+        trade_date: data.trade_date,
+        min_yield: data.min_yield,
+        max_yield: data.max_yield,
+        market_cap_unit: data.market_cap_unit,
+        universe_size: data.universe_size,
+        matched: data.matched,
+        count: data.count,
+        source: data.source,
+        results: data.results.map((row) => ({
+          code: row.code,
+          name: row.name,
+          dividend_yield: row.dividend_yield,
+          pe: row.pe,
+          pb: row.pb,
+          market_cap: row.market_cap,
+          close: row.close,
+        })),
+      });
+      if (result.ok) {
+        const to = result.recipients.join(", ") || authUser?.email || "your inbox";
+        setEmailStatus(`Sent to ${to}`);
+      } else {
+        setError(result.message || "Failed to send email");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to send email");
+    } finally {
+      setEmailing(false);
     }
   };
 
@@ -174,6 +219,12 @@ export function Dividends() {
         </div>
       )}
 
+      {emailStatus && (
+        <div className="text-sm text-foreground border border-border rounded p-3 bg-muted/30">
+          {emailStatus}
+        </div>
+      )}
+
       {loading && !data && !error && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
           Screening CSI 300…
@@ -182,13 +233,29 @@ export function Dividends() {
 
       {data && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>
-              Date {data.trade_date} · {data.matched}/{data.universe_size} matched · showing{" "}
-              {data.count}
-            </span>
-            <span>Source: {data.source}</span>
-            <span>Cap unit: 亿元</span>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                Date {data.trade_date} · {data.matched}/{data.universe_size} matched · showing{" "}
+                {data.count}
+              </span>
+              <span>Source: {data.source}</span>
+              <span>Cap unit: 亿元</span>
+            </div>
+            <button
+              type="button"
+              onClick={sendEmail}
+              disabled={emailing || loading || data.results.length === 0}
+              title={
+                authUser?.email
+                  ? `Send results to ${authUser.email}`
+                  : "Send results to your account email"
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border bg-background text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              {emailing ? "Sending…" : "Email results"}
+            </button>
           </div>
 
           {data.results.length === 0 ? (

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{# Generic screen-result table email (buy points, chanlun, etc.).
+   ``columns`` is a list of {key, label, align?}; ``rows`` are dicts of
+   already-formatted cell strings keyed by column.key. #}
+{% block content %}
+  <p style="margin: 0 0 14px 0; font-size: 13px; color: #5a6068; line-height: 1.5;">
+    {{ summary }}
+  </p>
+
+  <table style="width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.4;">
+    <thead>
+      <tr style="background: #f7f8fa; text-align: left;">
+        <th style="padding: 8px 6px; border-bottom: 1px solid #eceef1;">#</th>
+        {% for col in columns %}
+        <th style="padding: 8px 6px; border-bottom: 1px solid #eceef1;{% if col.align == 'right' %} text-align: right;{% endif %}">{{ col.label }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td style="padding: 7px 6px; border-bottom: 1px solid #f0f1f3; color: #8a8f99;">{{ loop.index }}</td>
+        {% for col in columns %}
+        <td style="padding: 7px 6px; border-bottom: 1px solid #f0f1f3;{% if col.align == 'right' %} text-align: right;{% endif %}{% if col.mono %} font-family: ui-monospace, SFMono-Regular, Menlo, monospace;{% endif %}{% if col.bold %} font-weight: 600;{% endif %}">{{ row.get(col.key, '—') }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

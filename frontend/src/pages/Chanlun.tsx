@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
-import { ChevronDown, GitBranch } from "lucide-react";
+import { ChevronDown, GitBranch, Mail } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
-import type { PriceBar, TradeMarker } from "@/lib/api";
+import { api, type PriceBar, type TradeMarker } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
 
 const UNIVERSE = "csi300";
 
@@ -66,12 +67,15 @@ interface ScreenResult {
 }
 
 export function Chanlun() {
+  const authUser = useAuthStore((s) => s.user);
   const [buyType, setBuyType] = useState<BuyType>("buy3");
   const [freshness, setFreshness] = useState(10);
   const [maPeriod, setMaPeriod] = useState(34);
   const [top, setTop] = useState(50);
   const [loading, setLoading] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [data, setData] = useState<ScreenResult | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [logicOpen, setLogicOpen] = useState(true);
@@ -79,6 +83,7 @@ export function Chanlun() {
 
   const runScreen = async () => {
     setError(null);
+    setEmailStatus(null);
     setLoading(true);
     setExpandedCode(null);
     setElapsedSec(0);
@@ -103,6 +108,53 @@ export function Chanlun() {
     } finally {
       window.clearInterval(tick);
       setLoading(false);
+    }
+  };
+
+  const sendEmail = async () => {
+    if (!data || data.results.length === 0) return;
+    setEmailStatus(null);
+    setError(null);
+    setEmailing(true);
+    try {
+      const result = await api.emailChanlun({
+        universe: data.universe,
+        market: data.market,
+        trade_date: data.trade_date,
+        buy_type: data.buy_type,
+        buy_label: data.buy_label,
+        signal_freshness: data.signal_freshness,
+        ma_period: data.ma_period,
+        universe_size: data.universe_size,
+        fetched: data.fetched,
+        matched: data.matched,
+        count: data.count,
+        source: data.source,
+        results: data.results.map((row) => ({
+          code: row.code,
+          name: row.name,
+          signal_date: row.signal_date,
+          buy_type: row.buy_type,
+          buy_label: row.buy_label,
+          signal_detail: row.signal_detail,
+          close: row.close,
+          zg: row.zg,
+          zd: row.zd,
+          bi_high: row.bi_high,
+          bi_low: row.bi_low,
+          days_since_signal: row.days_since_signal,
+        })),
+      });
+      if (result.ok) {
+        const to = result.recipients.join(", ") || authUser?.email || "your inbox";
+        setEmailStatus(`Sent to ${to}`);
+      } else {
+        setError(result.message || "Failed to send email");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to send email");
+    } finally {
+      setEmailing(false);
     }
   };
 
@@ -342,6 +394,12 @@ export function Chanlun() {
         </div>
       )}
 
+      {emailStatus && (
+        <div className="text-sm text-foreground border border-border rounded p-3 bg-muted/30">
+          {emailStatus}
+        </div>
+      )}
+
       {loading && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
           Screening CSI 300 for {selected.label}… {elapsedSec}s elapsed.
@@ -353,16 +411,32 @@ export function Chanlun() {
 
       {data && !loading && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>
-              Date {data.trade_date || "—"} · {data.matched}/{data.fetched} matched
-              (universe {data.universe_size}) · showing {data.count}
-            </span>
-            <span>Source: {data.source}</span>
-            <span>
-              {data.buy_label} · freshness {data.signal_freshness} · SMA{" "}
-              {data.ma_period}
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                Date {data.trade_date || "—"} · {data.matched}/{data.fetched} matched
+                (universe {data.universe_size}) · showing {data.count}
+              </span>
+              <span>Source: {data.source}</span>
+              <span>
+                {data.buy_label} · freshness {data.signal_freshness} · SMA{" "}
+                {data.ma_period}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={sendEmail}
+              disabled={emailing || data.results.length === 0}
+              title={
+                authUser?.email
+                  ? `Send results to ${authUser.email}`
+                  : "Send results to your account email"
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border bg-background text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              {emailing ? "Sending…" : "Email results"}
+            </button>
           </div>
 
           {data.warning && (

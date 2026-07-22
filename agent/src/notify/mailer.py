@@ -224,6 +224,257 @@ async def send_test_email(
     )
 
 
+def _fmt_num(value: float | None, digits: int = 2) -> str:
+    if value is None:
+        return "—"
+    try:
+        if value != value:  # NaN
+            return "—"
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+async def send_dividend_screen_email(
+    *,
+    to: str | Iterable[str],
+    screen: dict,
+    config: EmailConfig | None = None,
+) -> EmailResult:
+    """Email a high-dividend screen result table to ``to``.
+
+    ``screen`` is the JSON dict returned by ``screen_high_dividend`` / the
+    Dividends page (charts/sparklines are ignored if present).
+    """
+    rows_in = list(screen.get("results") or [])
+    rows = []
+    for row in rows_in:
+        rows.append(
+            {
+                "code": str(row.get("code") or ""),
+                "name": str(row.get("name") or ""),
+                "dividend_yield": float(row.get("dividend_yield") or 0),
+                "pe_fmt": _fmt_num(row.get("pe")),
+                "pb_fmt": _fmt_num(row.get("pb")),
+                "market_cap_fmt": _fmt_num(row.get("market_cap"), 1),
+                "close_fmt": _fmt_num(row.get("close")),
+            }
+        )
+
+    universe = str(screen.get("universe") or "")
+    trade_date = str(screen.get("trade_date") or "")
+    matched = screen.get("matched")
+    universe_size = screen.get("universe_size")
+    count = screen.get("count", len(rows))
+    source = screen.get("source") or ""
+    min_yield = screen.get("min_yield")
+    max_yield = screen.get("max_yield")
+    market_cap_unit = screen.get("market_cap_unit") or ""
+
+    yield_bits = []
+    if min_yield is not None:
+        yield_bits.append(f"min {min_yield}%")
+    if max_yield is not None:
+        yield_bits.append(f"max {max_yield}%")
+    filters = ", ".join(yield_bits) if yield_bits else "default filters"
+
+    summary = (
+        f"{universe.upper()} · {trade_date} · "
+        f"{matched}/{universe_size} matched · showing {count} · "
+        f"{filters}"
+        + (f" · source {source}" if source else "")
+        + (f" · cap unit {market_cap_unit}" if market_cap_unit else "")
+    )
+
+    subject = f"[Vibe-Trading] High Dividend Screen · {universe.upper()} · {trade_date}"
+    html = render_template(
+        "dividend_screen",
+        title=subject,
+        heading="High Dividend Screen",
+        kind="info",
+        summary=summary,
+        rows=rows,
+        details={
+            "Universe": universe,
+            "Trade date": trade_date,
+            "Source": source,
+        },
+        timestamp=_now_iso(),
+    )
+    return await send_email(to=to, subject=subject, html=html, config=config)
+
+
+async def send_screen_table_email(
+    *,
+    to: str | Iterable[str],
+    subject: str,
+    heading: str,
+    summary: str,
+    columns: list[dict],
+    rows: list[dict],
+    details: dict | None = None,
+    config: EmailConfig | None = None,
+) -> EmailResult:
+    """Email a generic screen-result table (buy points, chanlun, …).
+
+    ``columns`` entries: ``{"key", "label", "align"?, "mono"?, "bold"?}``.
+    ``rows`` are dicts of already-formatted cell strings keyed by column key.
+    """
+    html = render_template(
+        "screen_table",
+        title=subject,
+        heading=heading,
+        kind="info",
+        summary=summary,
+        columns=columns,
+        rows=rows,
+        details=details or {},
+        timestamp=_now_iso(),
+    )
+    return await send_email(to=to, subject=subject, html=html, config=config)
+
+
+async def send_buy_point_screen_email(
+    *,
+    to: str | Iterable[str],
+    screen: dict,
+    config: EmailConfig | None = None,
+) -> EmailResult:
+    """Email a right-side buy-point screen result table."""
+    rows_in = list(screen.get("results") or [])
+    rows = []
+    for row in rows_in:
+        rows.append(
+            {
+                "code": str(row.get("code") or ""),
+                "name": str(row.get("name") or "") or "—",
+                "signal_date": str(row.get("signal_date") or "—"),
+                "breakout_date": str(row.get("breakout_date") or "—"),
+                "prior_high": _fmt_num(row.get("prior_high")),
+                "pullback_low": _fmt_num(row.get("pullback_low")),
+                "close": _fmt_num(row.get("close")),
+                "breakout_pct": _fmt_num(row.get("breakout_pct")),
+                "volume_ratio": _fmt_num(row.get("volume_ratio")),
+                "days_ago": str(row.get("days_since_signal") if row.get("days_since_signal") is not None else "—"),
+            }
+        )
+
+    universe = str(screen.get("universe") or "")
+    trade_date = str(screen.get("trade_date") or "")
+    matched = screen.get("matched")
+    fetched = screen.get("fetched")
+    count = screen.get("count", len(rows))
+    source = screen.get("source") or ""
+    require_volume = screen.get("require_volume")
+    volume_mult = screen.get("volume_mult")
+    vol_bit = (
+        f"volume on ×{volume_mult}"
+        if require_volume
+        else "volume off"
+    )
+
+    summary = (
+        f"{universe.upper()} · {trade_date} · "
+        f"{matched}/{fetched} matched · showing {count} · {vol_bit}"
+        + (f" · source {source}" if source else "")
+    )
+    subject = f"[Vibe-Trading] Buy Points · {universe.upper()} · {trade_date}"
+    columns = [
+        {"key": "code", "label": "Code", "mono": True},
+        {"key": "name", "label": "Name"},
+        {"key": "signal_date", "label": "Signal"},
+        {"key": "breakout_date", "label": "Breakout"},
+        {"key": "prior_high", "label": "Prior High", "align": "right"},
+        {"key": "pullback_low", "label": "Pullback Low", "align": "right"},
+        {"key": "close", "label": "Close", "align": "right"},
+        {"key": "breakout_pct", "label": "Breakout %", "align": "right", "bold": True},
+        {"key": "volume_ratio", "label": "Vol Ratio", "align": "right"},
+        {"key": "days_ago", "label": "Days Ago", "align": "right"},
+    ]
+    return await send_screen_table_email(
+        to=to,
+        subject=subject,
+        heading="Right-Side Buy Points",
+        summary=summary,
+        columns=columns,
+        rows=rows,
+        details={"Universe": universe, "Trade date": trade_date, "Source": source},
+        config=config,
+    )
+
+
+async def send_chanlun_screen_email(
+    *,
+    to: str | Iterable[str],
+    screen: dict,
+    config: EmailConfig | None = None,
+) -> EmailResult:
+    """Email a Chanlun buy-point screen result table."""
+    rows_in = list(screen.get("results") or [])
+    rows = []
+    for row in rows_in:
+        rows.append(
+            {
+                "code": str(row.get("code") or ""),
+                "name": str(row.get("name") or "") or "—",
+                "buy_label": str(row.get("buy_label") or row.get("buy_type") or "—"),
+                "signal_date": str(row.get("signal_date") or "—"),
+                "zg": _fmt_num(row.get("zg")),
+                "zd": _fmt_num(row.get("zd")),
+                "close": _fmt_num(row.get("close")),
+                "days_ago": str(row.get("days_since_signal") if row.get("days_since_signal") is not None else "—"),
+                "detail": str(row.get("signal_detail") or "—"),
+            }
+        )
+
+    universe = str(screen.get("universe") or "")
+    trade_date = str(screen.get("trade_date") or "")
+    matched = screen.get("matched")
+    fetched = screen.get("fetched")
+    count = screen.get("count", len(rows))
+    source = screen.get("source") or ""
+    buy_label = screen.get("buy_label") or screen.get("buy_type") or ""
+    freshness = screen.get("signal_freshness")
+    ma_period = screen.get("ma_period")
+
+    summary = (
+        f"{universe.upper()} · {trade_date} · "
+        f"{matched}/{fetched} matched · showing {count} · "
+        f"{buy_label} · freshness {freshness} · SMA {ma_period}"
+        + (f" · source {source}" if source else "")
+    )
+    subject = (
+        f"[Vibe-Trading] Chanlun {buy_label or 'Buy'} · "
+        f"{universe.upper()} · {trade_date}"
+    )
+    columns = [
+        {"key": "code", "label": "Code", "mono": True},
+        {"key": "name", "label": "Name"},
+        {"key": "buy_label", "label": "Type", "bold": True},
+        {"key": "signal_date", "label": "Signal"},
+        {"key": "zg", "label": "ZG", "align": "right"},
+        {"key": "zd", "label": "ZD", "align": "right"},
+        {"key": "close", "label": "Close", "align": "right"},
+        {"key": "days_ago", "label": "Days Ago", "align": "right"},
+        {"key": "detail", "label": "Detail"},
+    ]
+    return await send_screen_table_email(
+        to=to,
+        subject=subject,
+        heading="Chanlun Buy Points",
+        summary=summary,
+        columns=columns,
+        rows=rows,
+        details={
+            "Universe": universe,
+            "Trade date": trade_date,
+            "Buy type": buy_label,
+            "Source": source,
+        },
+        config=config,
+    )
+
+
 # ------------------------- internals -------------------------
 
 

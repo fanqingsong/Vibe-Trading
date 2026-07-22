@@ -18,7 +18,16 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Registered template names. ``base.html`` is a shared layout; the others are
 # concrete templates rendered for specific event families.
-_TEMPLATE_NAMES: frozenset[str] = frozenset({"trade_alert", "report", "system", "scheduled_report"})
+_TEMPLATE_NAMES: frozenset[str] = frozenset(
+    {
+        "trade_alert",
+        "report",
+        "system",
+        "scheduled_report",
+        "dividend_screen",
+        "screen_table",
+    }
+)
 
 
 def _env() -> Environment:
@@ -36,7 +45,8 @@ def render_template(name: str, **context: Any) -> str:
 
     Args:
         name: Template key without extension — one of ``"trade_alert"``,
-            ``"report"``, ``"system"``.
+            ``"report"``, ``"system"``, ``"scheduled_report"``,
+            ``"dividend_screen"``, ``"screen_table"``.
         **context: Variables forwarded to the template.
 
     Returns:

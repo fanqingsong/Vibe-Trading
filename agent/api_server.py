@@ -265,6 +265,110 @@ class EmailTestResponse(BaseModel):
     recipients: List[str]
 
 
+class DividendEmailRow(BaseModel):
+    """One row of the high-dividend screen (charts omitted for email)."""
+
+    code: str
+    name: str = ""
+    dividend_yield: float
+    pe: Optional[float] = None
+    pb: Optional[float] = None
+    market_cap: Optional[float] = None
+    close: Optional[float] = None
+
+
+class DividendEmailRequest(BaseModel):
+    """Payload for emailing the currently displayed dividend screen."""
+
+    universe: str
+    market: str = "a_share"
+    trade_date: str
+    min_yield: float = 3.0
+    max_yield: Optional[float] = None
+    min_market_cap: Optional[float] = None
+    max_pe: Optional[float] = None
+    market_cap_unit: str = "CNY_yi"
+    universe_size: int = 0
+    matched: int = 0
+    count: int = 0
+    source: str = ""
+    results: List[DividendEmailRow]
+
+
+class BuyPointEmailRow(BaseModel):
+    """One right-side buy-point row (charts omitted for email)."""
+
+    code: str
+    name: str = ""
+    signal_date: str = ""
+    breakout_date: str = ""
+    prior_high: Optional[float] = None
+    pullback_low: Optional[float] = None
+    breakout_close: Optional[float] = None
+    close: Optional[float] = None
+    breakout_pct: Optional[float] = None
+    volume_ratio: Optional[float] = None
+    days_since_signal: Optional[int] = None
+    days_after_breakout: Optional[int] = None
+
+
+class BuyPointEmailRequest(BaseModel):
+    """Payload for emailing the currently displayed buy-point screen."""
+
+    universe: str
+    market: str = "a_share"
+    trade_date: str = ""
+    prior_high_lookback: int = 60
+    prior_high_exclude: int = 5
+    min_pullback_days: int = 3
+    max_pullback_days: int = 15
+    hold_tolerance: float = 0.02
+    signal_freshness: int = 10
+    require_volume: bool = True
+    volume_mult: float = 1.2
+    universe_size: int = 0
+    fetched: int = 0
+    matched: int = 0
+    count: int = 0
+    source: str = ""
+    results: List[BuyPointEmailRow]
+
+
+class ChanlunEmailRow(BaseModel):
+    """One Chanlun buy-point row (charts omitted for email)."""
+
+    code: str
+    name: str = ""
+    signal_date: str = ""
+    buy_type: str = ""
+    buy_label: str = ""
+    signal_detail: str = ""
+    close: Optional[float] = None
+    zg: Optional[float] = None
+    zd: Optional[float] = None
+    bi_high: Optional[float] = None
+    bi_low: Optional[float] = None
+    days_since_signal: Optional[int] = None
+
+
+class ChanlunEmailRequest(BaseModel):
+    """Payload for emailing the currently displayed Chanlun screen."""
+
+    universe: str
+    market: str = "a_share"
+    trade_date: str = ""
+    buy_type: str = "buy3"
+    buy_label: str = ""
+    signal_freshness: int = 10
+    ma_period: int = 34
+    universe_size: int = 0
+    fetched: int = 0
+    matched: int = 0
+    count: int = 0
+    source: str = ""
+    results: List[ChanlunEmailRow]
+
+
 # ---- V4 Session Models ----
 
 class CreateSessionRequest(BaseModel):
@@ -1808,6 +1912,32 @@ async def screen_dividends(
         raise HTTPException(status_code=500, detail=f"Dividend screen failed: {exc}")
 
 
+@app.post(
+    "/dividends/email",
+    response_model=EmailTestResponse,
+)
+async def email_dividends(
+    payload: DividendEmailRequest,
+    current_user=Depends(require_local_or_auth),
+):
+    """Email the currently displayed high-dividend screen to the user.
+
+    Uses the account email when available; otherwise falls back to
+    ``NOTIFY_RECIPIENTS`` / SMTP user (same pattern as the test-email endpoint).
+    Chart payloads (sparkline/bars) are ignored — only the table is sent.
+    Failures return HTTP 200 with ``ok=false`` so the UI can show the message.
+    """
+    from src.notify.mailer import send_dividend_screen_email
+
+    return await _email_screen_results(
+        current_user,
+        results=payload.results,
+        send=lambda recipients: send_dividend_screen_email(
+            to=recipients, screen=payload.model_dump()
+        ),
+    )
+
+
 @app.get("/buy-points")
 async def screen_buy_points(
     universe: str = Query(
@@ -1892,6 +2022,26 @@ async def screen_buy_points(
         raise HTTPException(status_code=500, detail=f"Buy-point screen failed: {exc}")
 
 
+@app.post(
+    "/buy-points/email",
+    response_model=EmailTestResponse,
+)
+async def email_buy_points(
+    payload: BuyPointEmailRequest,
+    current_user=Depends(require_local_or_auth),
+):
+    """Email the currently displayed buy-point screen to the user."""
+    from src.notify.mailer import send_buy_point_screen_email
+
+    return await _email_screen_results(
+        current_user,
+        results=payload.results,
+        send=lambda recipients: send_buy_point_screen_email(
+            to=recipients, screen=payload.model_dump()
+        ),
+    )
+
+
 @app.get("/chanlun")
 async def screen_chanlun(
     universe: str = Query(
@@ -1961,6 +2111,64 @@ async def screen_chanlun(
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Chanlun screen failed: {exc}")
+
+
+@app.post(
+    "/chanlun/email",
+    response_model=EmailTestResponse,
+)
+async def email_chanlun(
+    payload: ChanlunEmailRequest,
+    current_user=Depends(require_local_or_auth),
+):
+    """Email the currently displayed Chanlun screen to the user."""
+    from src.notify.mailer import send_chanlun_screen_email
+
+    return await _email_screen_results(
+        current_user,
+        results=payload.results,
+        send=lambda recipients: send_chanlun_screen_email(
+            to=recipients, screen=payload.model_dump()
+        ),
+    )
+
+
+def _resolve_screen_email_recipients(current_user) -> list[str]:
+    """Prefer the signed-in user's email; fall back to SMTP notify recipients."""
+    from src.auth.service import SYSTEM_USER_EMAIL
+    from src.notify.config import load_email_config
+
+    user_email = (getattr(current_user, "email", None) or "").strip()
+    if user_email and user_email.lower() != SYSTEM_USER_EMAIL:
+        return [user_email]
+    cfg = load_email_config()
+    recipients = list(cfg.recipients)
+    if not recipients and cfg.user:
+        recipients = [cfg.user]
+    return recipients
+
+
+async def _email_screen_results(current_user, *, results, send) -> EmailTestResponse:
+    """Shared send path for dividend / buy-point / chanlun email endpoints."""
+    if not results:
+        raise HTTPException(status_code=400, detail="No results to email")
+
+    recipients = _resolve_screen_email_recipients(current_user)
+    if not recipients:
+        return EmailTestResponse(
+            ok=False,
+            message="No recipient email. Sign in with an account email, or set NOTIFY_RECIPIENTS / SMTP user in Settings.",
+            latency_ms=0,
+            recipients=[],
+        )
+
+    result = await send(recipients)
+    return EmailTestResponse(
+        ok=result.ok,
+        message=result.message,
+        latency_ms=result.latency_ms,
+        recipients=result.recipients,
+    )
 
 
 def _terminate_current_process() -> None:

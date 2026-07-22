@@ -194,6 +194,21 @@ export const api = {
     }),
   testEmailSettings: () =>
     request<EmailTestResult>("/settings/email/test", { method: "POST" }),
+  emailDividends: (payload: DividendEmailRequest) =>
+    request<EmailTestResult>("/dividends/email", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  emailBuyPoints: (payload: BuyPointEmailRequest) =>
+    request<EmailTestResult>("/buy-points/email", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  emailChanlun: (payload: ChanlunEmailRequest) =>
+    request<EmailTestResult>("/chanlun/email", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 
   // Alpha Zoo API
   listAlphas: (params: AlphaListParams = {}) => {
@@ -400,6 +415,98 @@ export interface EmailTestResult {
   message: string;
   latency_ms: number;
   recipients: string[];
+}
+
+export interface DividendEmailRow {
+  code: string;
+  name: string;
+  dividend_yield: number;
+  pe: number | null;
+  pb: number | null;
+  market_cap: number | null;
+  close: number | null;
+}
+
+export interface DividendEmailRequest {
+  universe: string;
+  market: string;
+  trade_date: string;
+  min_yield: number;
+  max_yield: number | null;
+  min_market_cap?: number | null;
+  max_pe?: number | null;
+  market_cap_unit: string;
+  universe_size: number;
+  matched: number;
+  count: number;
+  source: string;
+  results: DividendEmailRow[];
+}
+
+export interface BuyPointEmailRow {
+  code: string;
+  name: string;
+  signal_date: string;
+  breakout_date: string;
+  prior_high: number | null;
+  pullback_low: number | null;
+  breakout_close?: number | null;
+  close: number | null;
+  breakout_pct: number | null;
+  volume_ratio: number | null;
+  days_since_signal: number | null;
+  days_after_breakout?: number | null;
+}
+
+export interface BuyPointEmailRequest {
+  universe: string;
+  market: string;
+  trade_date: string;
+  prior_high_lookback?: number;
+  prior_high_exclude?: number;
+  min_pullback_days?: number;
+  max_pullback_days?: number;
+  hold_tolerance?: number;
+  signal_freshness?: number;
+  require_volume: boolean;
+  volume_mult: number;
+  universe_size: number;
+  fetched: number;
+  matched: number;
+  count: number;
+  source: string;
+  results: BuyPointEmailRow[];
+}
+
+export interface ChanlunEmailRow {
+  code: string;
+  name: string;
+  signal_date: string;
+  buy_type: string;
+  buy_label: string;
+  signal_detail: string;
+  close: number | null;
+  zg: number | null;
+  zd: number | null;
+  bi_high?: number | null;
+  bi_low?: number | null;
+  days_since_signal: number | null;
+}
+
+export interface ChanlunEmailRequest {
+  universe: string;
+  market: string;
+  trade_date: string;
+  buy_type: string;
+  buy_label: string;
+  signal_freshness: number;
+  ma_period: number;
+  universe_size: number;
+  fetched: number;
+  matched: number;
+  count: number;
+  source: string;
+  results: ChanlunEmailRow[];
 }
 
 // --- Types matching backend API contracts ---
