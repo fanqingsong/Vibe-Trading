@@ -210,6 +210,16 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  // Screen job API — refresh-survivable background screens (Dividends,
+  // Buy Points, Chanlun). POST starts (or re-attaches to) a job; GET polls it.
+  startScreenJob: (kind: ScreenJobKind, params: Record<string, unknown>, fresh = false) =>
+    request<StartScreenJobResponse>(`/screen/${kind}/jobs`, {
+      method: "POST",
+      body: JSON.stringify({ params, fresh }),
+    }),
+  getScreenJob: (kind: ScreenJobKind, jobId: string) =>
+    request<ScreenJobStatus>(`/screen/${kind}/jobs/${encodeURIComponent(jobId)}`),
+
   // Alpha Zoo API
   listAlphas: (params: AlphaListParams = {}) => {
     const q = new URLSearchParams();
@@ -507,6 +517,29 @@ export interface ChanlunEmailRequest {
   count: number;
   source: string;
   results: ChanlunEmailRow[];
+}
+
+// --- Screen job types (background dividends / buy-points / chanlun screens) ---
+
+export type ScreenJobKind = "dividends" | "buy-points" | "chanlun";
+
+/** Response of ``POST /screen/{kind}/jobs``. */
+export interface StartScreenJobResponse {
+  job_id: string;
+  status: "queued" | "running" | "done";
+  /** "running" | "done" when an identical job was reused, else null. */
+  reused: string | null;
+}
+
+/** Response of ``GET /screen/{kind}/jobs/{job_id}``. */
+export interface ScreenJobStatus {
+  job_id: string;
+  kind: ScreenJobKind;
+  status: "queued" | "running" | "done" | "error";
+  elapsed_seconds: number;
+  created_at: string;
+  result: unknown;
+  error: string | null;
 }
 
 // --- Types matching backend API contracts ---

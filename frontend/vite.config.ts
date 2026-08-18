@@ -11,6 +11,9 @@ const PROXY_PATHS = [
   "/live",
   "/upload",
   "/shadow-reports",
+  // Background screen-job API (dividends / buy-points / chanlun screens).
+  // No SPA page lives under /screen, so a plain proxy (no HTML fallback) fits.
+  "/screen",
 ];
 
 export default defineConfig(({ mode }) => {

@@ -1,11 +1,17 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { ChevronDown, GitBranch, Mail } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import { api, type PriceBar, type TradeMarker } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
+import {
+  numScreenParam,
+  strScreenParam,
+  useScreenJob,
+} from "@/hooks/useScreenJob";
 
 const UNIVERSE = "csi300";
+const STORAGE_KEY = "vibe:screen:chanlun";
 
 type BuyType = "buy1" | "buy2" | "buy3";
 
@@ -68,53 +74,51 @@ interface ScreenResult {
 
 export function Chanlun() {
   const authUser = useAuthStore((s) => s.user);
-  const [buyType, setBuyType] = useState<BuyType>("buy3");
-  const [freshness, setFreshness] = useState(10);
-  const [maPeriod, setMaPeriod] = useState(34);
-  const [top, setTop] = useState(50);
-  const [loading, setLoading] = useState(false);
+  // Filter defaults rehydrate from the stored screen job (if any) so a page
+  // refresh restores both the running screen and the form values behind it.
+  const [buyType, setBuyType] = useState<BuyType>(() => {
+    const v = strScreenParam(STORAGE_KEY, "buy_type", "buy3");
+    return v === "buy1" || v === "buy2" || v === "buy3" ? (v as BuyType) : "buy3";
+  });
+  const [freshness, setFreshness] = useState(() => numScreenParam(STORAGE_KEY, "signal_freshness", 10));
+  const [maPeriod, setMaPeriod] = useState(() => numScreenParam(STORAGE_KEY, "ma_period", 34));
+  const [top, setTop] = useState(() => numScreenParam(STORAGE_KEY, "top", 50));
   const [emailing, setEmailing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
-  const [data, setData] = useState<ScreenResult | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [logicOpen, setLogicOpen] = useState(true);
-  const [elapsedSec, setElapsedSec] = useState(0);
 
-  const runScreen = async () => {
-    setError(null);
+  const buildParams = () => ({
+    universe: UNIVERSE,
+    buy_type: buyType,
+    signal_freshness: freshness,
+    ma_period: maPeriod,
+    top,
+  });
+
+  // Background job screen: auto-loads on enter and survives page refreshes
+  // (re-attaches to the running job instead of restarting the screen).
+  const screen = useScreenJob<ScreenResult>({
+    kind: "chanlun",
+    storageKey: STORAGE_KEY,
+    buildParams,
+  });
+  const loading = screen.phase === "running";
+  const error = screen.error ?? emailError;
+  const data = screen.data;
+
+  const runScreen = () => {
     setEmailStatus(null);
-    setLoading(true);
+    setEmailError(null);
     setExpandedCode(null);
-    setElapsedSec(0);
-    const started = Date.now();
-    const tick = window.setInterval(() => {
-      setElapsedSec(Math.floor((Date.now() - started) / 1000));
-    }, 1000);
-    try {
-      const params = new URLSearchParams({
-        universe: UNIVERSE,
-        buy_type: buyType,
-        signal_freshness: String(freshness),
-        ma_period: String(maPeriod),
-        top: String(top),
-      });
-
-      const result = await request<ScreenResult>(`/chanlun?${params.toString()}`);
-      setData(result);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Chanlun screen failed");
-      setData(null);
-    } finally {
-      window.clearInterval(tick);
-      setLoading(false);
-    }
+    screen.start();
   };
 
   const sendEmail = async () => {
     if (!data || data.results.length === 0) return;
     setEmailStatus(null);
-    setError(null);
+    setEmailError(null);
     setEmailing(true);
     try {
       const result = await api.emailChanlun({
@@ -149,20 +153,14 @@ export function Chanlun() {
         const to = result.recipients.join(", ") || authUser?.email || "your inbox";
         setEmailStatus(`Sent to ${to}`);
       } else {
-        setError(result.message || "Failed to send email");
+        setEmailError(result.message || "Failed to send email");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send email");
+      setEmailError(e instanceof Error ? e.message : "Failed to send email");
     } finally {
       setEmailing(false);
     }
   };
-
-  useEffect(() => {
-    void runScreen();
-    // Auto-load once on enter with default filter values.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const selected = BUY_OPTIONS.find((o) => o.value === buyType)!;
 
@@ -402,10 +400,11 @@ export function Chanlun() {
 
       {loading && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
-          Screening CSI 300 for {selected.label}… {elapsedSec}s elapsed.
-          {elapsedSec < 20
+          Screening CSI 300 for {selected.label}… {screen.elapsedSec}s elapsed.
+          {screen.elapsedSec < 20
             ? " Fetching daily bars…"
             : " Running czsc on each name — usually finishes within ~1 minute."}
+          {screen.resumed && " Re-attached to the background screen after refresh."}
         </div>
       )}
 
@@ -583,21 +582,3 @@ function chartMarkers(row: ChanlunRow): TradeMarker[] {
   ];
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const body = await res.json();
-      detail = body.detail || body.message || detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
-  const text = await res.text();
-  return text ? JSON.parse(text) : ({} as T);
-}

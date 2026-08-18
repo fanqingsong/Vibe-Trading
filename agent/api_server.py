@@ -3788,6 +3788,15 @@ register_alpha_routes(app)
 
 
 # ============================================================================
+# Screen job routes (Web UI) — refresh-survivable dividends / buy-points /
+# chanlun screens, defined in src/api/screen_routes.py
+# ============================================================================
+
+from src.api.screen_routes import register_screen_routes  # noqa: E402
+register_screen_routes(app)
+
+
+# ============================================================================
 # Generic Scheduled Tasks (Web UI) — defined in src/api/scheduler_routes.py
 # ============================================================================
 

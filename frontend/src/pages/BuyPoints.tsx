@@ -1,15 +1,21 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { ChevronDown, Crosshair, Mail } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import { api, type PriceBar, type TradeMarker } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
+import {
+  boolScreenParam,
+  numScreenParam,
+  useScreenJob,
+} from "@/hooks/useScreenJob";
 
 /** Fixed backend default (not exposed in the form). */
 const PRIOR_HIGH_EXCLUDE = 5;
 const MIN_PULLBACK_DAYS = 3;
 
 const UNIVERSE = "csi300";
+const STORAGE_KEY = "vibe:screen:buy-points";
 
 interface SparkPoint {
   date: string;
@@ -56,50 +62,52 @@ interface ScreenResult {
 
 export function BuyPoints() {
   const authUser = useAuthStore((s) => s.user);
-  const [lookback, setLookback] = useState(60);
-  const [maxPullback, setMaxPullback] = useState(15);
-  const [tolerancePct, setTolerancePct] = useState(2);
-  const [freshness, setFreshness] = useState(10);
-  const [requireVolume, setRequireVolume] = useState(true);
-  const [top, setTop] = useState(50);
-  const [loading, setLoading] = useState(false);
+  // Filter defaults rehydrate from the stored screen job (if any) so a page
+  // refresh restores both the running screen and the form values behind it.
+  const [lookback, setLookback] = useState(() => numScreenParam(STORAGE_KEY, "prior_high_lookback", 60));
+  const [maxPullback, setMaxPullback] = useState(() => numScreenParam(STORAGE_KEY, "max_pullback_days", 15));
+  const [tolerancePct, setTolerancePct] = useState(() => numScreenParam(STORAGE_KEY, "hold_tolerance", 0.02) * 100);
+  const [freshness, setFreshness] = useState(() => numScreenParam(STORAGE_KEY, "signal_freshness", 10));
+  const [requireVolume, setRequireVolume] = useState(() => boolScreenParam(STORAGE_KEY, "require_volume", true));
+  const [top, setTop] = useState(() => numScreenParam(STORAGE_KEY, "top", 50));
   const [emailing, setEmailing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
-  const [data, setData] = useState<ScreenResult | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [logicOpen, setLogicOpen] = useState(true);
 
-  const runScreen = async () => {
-    setError(null);
-    setEmailStatus(null);
-    setLoading(true);
-    setExpandedCode(null);
-    try {
-      const params = new URLSearchParams({
-        universe: UNIVERSE,
-        prior_high_lookback: String(lookback),
-        max_pullback_days: String(maxPullback),
-        hold_tolerance: String(tolerancePct / 100),
-        signal_freshness: String(freshness),
-        require_volume: String(requireVolume),
-        top: String(top),
-      });
+  const buildParams = () => ({
+    universe: UNIVERSE,
+    prior_high_lookback: lookback,
+    max_pullback_days: maxPullback,
+    hold_tolerance: tolerancePct / 100,
+    signal_freshness: freshness,
+    require_volume: requireVolume,
+    top,
+  });
 
-      const result = await request<ScreenResult>(`/buy-points?${params.toString()}`);
-      setData(result);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Buy-point screen failed");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
+  // Background job screen: auto-loads on enter and survives page refreshes
+  // (re-attaches to the running job instead of restarting the screen).
+  const screen = useScreenJob<ScreenResult>({
+    kind: "buy-points",
+    storageKey: STORAGE_KEY,
+    buildParams,
+  });
+  const loading = screen.phase === "running";
+  const error = screen.error ?? emailError;
+  const data = screen.data;
+
+  const runScreen = () => {
+    setEmailStatus(null);
+    setEmailError(null);
+    setExpandedCode(null);
+    screen.start();
   };
 
   const sendEmail = async () => {
     if (!data || data.results.length === 0) return;
     setEmailStatus(null);
-    setError(null);
+    setEmailError(null);
     setEmailing(true);
     try {
       const result = await api.emailBuyPoints({
@@ -138,20 +146,14 @@ export function BuyPoints() {
         const to = result.recipients.join(", ") || authUser?.email || "your inbox";
         setEmailStatus(`Sent to ${to}`);
       } else {
-        setError(result.message || "Failed to send email");
+        setEmailError(result.message || "Failed to send email");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send email");
+      setEmailError(e instanceof Error ? e.message : "Failed to send email");
     } finally {
       setEmailing(false);
     }
   };
-
-  useEffect(() => {
-    void runScreen();
-    // Auto-load once on enter with default filter values.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-6xl mx-auto">
@@ -450,9 +452,11 @@ export function BuyPoints() {
         </div>
       )}
 
-      {loading && !data && !error && (
+      {loading && !error && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
-          Screening CSI 300… first run may take ~2 minutes.
+          Screening CSI 300… {screen.elapsedSec}s elapsed. First run may take ~2
+          minutes.
+          {screen.resumed && " Re-attached to the background screen after refresh."}
         </div>
       )}
 
@@ -634,21 +638,3 @@ function chartMarkers(row: BuyPointRow): TradeMarker[] {
   return markers;
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const body = await res.json();
-      detail = body.detail || body.message || detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
-  const text = await res.text();
-  return text ? JSON.parse(text) : ({} as T);
-}

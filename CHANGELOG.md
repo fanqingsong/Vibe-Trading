@@ -6,6 +6,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Refresh-survivable screen jobs.** The Dividends / Buy Points / Chanlun
+  screens now run server-side as background jobs (`POST /screen/{kind}/jobs`
+  + `GET /screen/{kind}/jobs/{job_id}`), and the pages remember the running
+  job across a browser refresh: an in-flight screen keeps showing its
+  progress (with server-side elapsed time) instead of restarting, a recently
+  finished screen re-hydrates its table instantly, and identical concurrent
+  requests re-attach to the same job instead of double-pulling the universe.
+  Filter form values are restored alongside the job.
 
 ### Changed
 

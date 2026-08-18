@@ -1,11 +1,17 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { ChevronDown, Mail, Percent } from "lucide-react";
 import { Sparkline } from "@/components/charts/Sparkline";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import { api, type PriceBar } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
+import {
+  numScreenParam,
+  strScreenParam,
+  useScreenJob,
+} from "@/hooks/useScreenJob";
 
 const UNIVERSE = "csi300";
+const STORAGE_KEY = "vibe:screen:dividends";
 
 interface SparkPoint {
   date: string;
@@ -40,47 +46,52 @@ interface ScreenResult {
 
 export function Dividends() {
   const authUser = useAuthStore((s) => s.user);
-  const [minYield, setMinYield] = useState(3);
-  const [maxYield, setMaxYield] = useState<string>("");
-  const [minMv, setMinMv] = useState<string>("");
-  const [maxPe, setMaxPe] = useState<string>("");
-  const [top, setTop] = useState(50);
-  const [loading, setLoading] = useState(false);
+  // Filter defaults rehydrate from the stored screen job (if any) so a page
+  // refresh restores both the running screen and the form values behind it.
+  const [minYield, setMinYield] = useState(() => numScreenParam(STORAGE_KEY, "min_yield", 3));
+  const [maxYield, setMaxYield] = useState(() => strScreenParam(STORAGE_KEY, "max_yield", ""));
+  const [minMv, setMinMv] = useState(() => strScreenParam(STORAGE_KEY, "min_market_cap", ""));
+  const [maxPe, setMaxPe] = useState(() => strScreenParam(STORAGE_KEY, "max_pe", ""));
+  const [top, setTop] = useState(() => numScreenParam(STORAGE_KEY, "top", 50));
   const [emailing, setEmailing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
-  const [data, setData] = useState<ScreenResult | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
 
-  const runScreen = async () => {
-    setError(null);
-    setEmailStatus(null);
-    setLoading(true);
-    setExpandedCode(null);
-    try {
-      const params = new URLSearchParams({
-        universe: UNIVERSE,
-        min_yield: String(minYield),
-        top: String(top),
-      });
-      if (maxYield.trim()) params.set("max_yield", maxYield.trim());
-      if (minMv.trim()) params.set("min_market_cap", minMv.trim());
-      if (maxPe.trim()) params.set("max_pe", maxPe.trim());
+  const buildParams = () => {
+    const params: Record<string, unknown> = {
+      universe: UNIVERSE,
+      min_yield: minYield,
+      top,
+    };
+    if (maxYield.trim()) params.max_yield = Number(maxYield.trim());
+    if (minMv.trim()) params.min_market_cap = Number(minMv.trim());
+    if (maxPe.trim()) params.max_pe = Number(maxPe.trim());
+    return params;
+  };
 
-      const result = await request<ScreenResult>(`/dividends?${params.toString()}`);
-      setData(result);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Dividend screen failed");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
+  // Background job screen: auto-loads on enter and survives page refreshes
+  // (re-attaches to the running job instead of restarting the screen).
+  const screen = useScreenJob<ScreenResult>({
+    kind: "dividends",
+    storageKey: STORAGE_KEY,
+    buildParams,
+  });
+  const loading = screen.phase === "running";
+  const error = screen.error ?? emailError;
+  const data = screen.data;
+
+  const runScreen = () => {
+    setEmailStatus(null);
+    setEmailError(null);
+    setExpandedCode(null);
+    screen.start();
   };
 
   const sendEmail = async () => {
     if (!data || data.results.length === 0) return;
     setEmailStatus(null);
-    setError(null);
+    setEmailError(null);
     setEmailing(true);
     try {
       const result = await api.emailDividends({
@@ -108,20 +119,14 @@ export function Dividends() {
         const to = result.recipients.join(", ") || authUser?.email || "your inbox";
         setEmailStatus(`Sent to ${to}`);
       } else {
-        setError(result.message || "Failed to send email");
+        setEmailError(result.message || "Failed to send email");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send email");
+      setEmailError(e instanceof Error ? e.message : "Failed to send email");
     } finally {
       setEmailing(false);
     }
   };
-
-  useEffect(() => {
-    void runScreen();
-    // Auto-load once on enter with default filter values.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-6xl mx-auto">
@@ -225,9 +230,10 @@ export function Dividends() {
         </div>
       )}
 
-      {loading && !data && !error && (
+      {loading && !error && (
         <div className="text-sm text-muted-foreground border rounded-lg p-6 text-center">
-          Screening CSI 300…
+          Screening CSI 300… {screen.elapsedSec}s elapsed.
+          {screen.resumed && " Re-attached to the background screen after refresh."}
         </div>
       )}
 
@@ -369,23 +375,4 @@ function fmt(v: number | null): string {
 function fmtCap(v: number | null): string {
   if (v == null || Number.isNaN(v)) return "—";
   return v.toFixed(1);
-}
-
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const body = await res.json();
-      detail = body.detail || body.message || detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
-  const text = await res.text();
-  return text ? JSON.parse(text) : ({} as T);
 }
