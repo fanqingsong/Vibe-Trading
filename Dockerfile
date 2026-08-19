@@ -31,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # mootdx pins httpx<0.26 (conflicts with MCP/fastmcp); install mootdx itself
 # without deps first, then let the normal resolver handle everything else
 # (including mootdx's real deps like tdxpy) with the modern httpx.
+# Override the pip index for slow links to pypi.org, e.g.:
+#   docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY agent/requirements.txt agent/requirements.txt
 RUN pip install --no-cache-dir --no-deps "mootdx>=0.11.0" \
     && pip install --no-cache-dir -r agent/requirements.txt
